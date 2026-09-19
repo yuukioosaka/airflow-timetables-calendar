@@ -125,8 +125,12 @@ jobs:
 
       - name: Ruff format
         # `--check` ignores non-Python files by default, so the fenced Python
-        # examples in README.md are excluded rather than reformatted.
-        run: ruff format --check --diff --exclude README.md .
+        # examples in the READMEs are excluded rather than reformatted. They are
+        # illustrative, and some wrap deliberately to stay readable.
+        run: |
+          ruff format --check --diff \
+            --exclude README.md \
+            --exclude README.JP.md .
 
       - name: Mypy
         run: mypy src/airflow_timetables_calendar
