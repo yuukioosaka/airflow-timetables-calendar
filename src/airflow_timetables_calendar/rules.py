@@ -144,6 +144,47 @@ class Frequency(str, Enum):
 _SUPPORTED_FREQUENCIES = frozenset({Frequency.DAILY, Frequency.MONTHLY})
 
 
+def _reject_unimplemented_fields(rule: ScheduleRule) -> None:
+    """Fail loudly on vocabulary this engine records but cannot honour.
+
+    Both fields below are part of the classical vocabulary and are carried so a
+    transcription round-trips, but neither has a referent in this engine. A rule
+    that sets one and is then quietly treated as ordinary does the *opposite* of
+    what was asked -- it produces the runs the caller meant to suppress, or
+    ignores the boundary the caller meant to draw -- and a wrong schedule that
+    looks plausible is the one failure mode this library exists to avoid. So
+    they are rejected where the mistake is visible, at construction.
+
+    * ``virtual`` (除外) is an ordering decision: "suppress days another rule
+      produced". :func:`resolve_rules` returns the *first* rule that matches and
+      its callers use that to ask only "does any rule yield this day?", so a
+      virtual rule changes nothing about the outcome -- it is returned like any
+      other rule and the day runs exactly as if it had not been listed. Nothing
+      in this package reads the flag, which is also why the tests that appeared
+      to cover it only asserted that the returned object *had* the flag set.
+
+    * ``include_start`` is the inclusive/exclusive edge of 開始年月. This engine
+      has no 開始年月 *value* to compare against: a :class:`Period` is derived
+      from the day under test, so a rule never learns "which month it started
+      from", and there is nothing for the flag to test. Bounding the window is
+      the job of the caller, which knows its own start date.
+    """
+    if rule.virtual:
+        raise NotImplementedError(
+            "virtual=True (除外) is not implemented: nothing consults the flag, so a "
+            "rule that sets it suppresses nothing and the day it names still runs. "
+            "Express the exclusion with the timetable's exclude_dates, or leave the "
+            "rule out."
+        )
+    if not rule.include_start:
+        raise NotImplementedError(
+            "include_start=False is not implemented: this engine carries no 開始年月 "
+            "value, so a rule cannot tell whether the period it is resolving is the one "
+            "it started from. Bound the window on the timetable instead -- pass the "
+            "month you want the schedule to begin with as the timetable's start_date."
+        )
+
+
 def _reject_unsupported_frequency(frequency: Frequency) -> Frequency:
     """Fail loudly on a 処理サイクル the engine cannot honour.
 
@@ -341,7 +382,9 @@ class ScheduleRule:
 
     A rule is only evaluated for the :class:`Period` it falls in, so
     :meth:`resolve` is always anchored to "the occurrence in this month" rather
-    than producing an unbounded series.
+    than producing an unbounded series. That is also why :attr:`scope` exists as
+    a *mode* rather than as a stored 開始年月: the engine learns the period from
+    the day it is asked about, never from the rule.
 
     :param kind: What the day offset counts (種別).
     :param start_day: How the day is named (開始日).
@@ -360,10 +403,18 @@ class ScheduleRule:
     :param offset_grace_days: Max distance the offset may travel.
     :param shift_direction: Direction the 休止日 shift travels when the offset
         stage is the one that carries a closed anchor onto a working day.
-    :param scope: 開始年月 -- whether the rule is bound to the anchor month.
+    :param scope: Whether the rule is bound to the anchor month
+        (:attr:`Scope.PERIOD`, which is what 開始年月 semantics amount to once a
+        caller has bounded the window itself) or free to move anywhere the grace
+        windows allow (:attr:`Scope.FREE`).
     :param frequency: Repeat period (処理サイクル).
-    :param include_start: Whether ``start_date`` itself may produce a run.
-    :param virtual: If set, this rule only suppresses others (``除外``).
+    :param include_start: 開始年月's inclusive/exclusive edge. Carried for
+        vocabulary completeness only: **not implemented**, and rejected when set
+        to ``False``, because this engine holds no 開始年月 value to compare
+        against. See :func:`_reject_unimplemented_fields`.
+    :param virtual: ``除外``. Not implemented, and rejected when set: no code in
+        this package consults it, so a virtual rule suppresses nothing and the
+        day it names still runs. See :func:`_reject_unimplemented_fields`.
     """
 
     kind: Kind = Kind.OPERATING
@@ -412,6 +463,9 @@ class ScheduleRule:
                 object.__setattr__(self, name, enum(value))
         if self.weekday is not None and not isinstance(self.weekday, Weekday):
             object.__setattr__(self, "weekday", Weekday(self.weekday))
+        # 除外 and the 開始年月 boundary are requests this engine would answer by
+        # doing the opposite, so they must not reach resolution.
+        _reject_unimplemented_fields(self)
         # After the coercion, so a raw "weekly" string is caught too. A 処理サイクル
         # nothing consults would repeat monthly, so it must not reach resolution.
         _reject_unsupported_frequency(self.frequency)
@@ -455,8 +509,9 @@ class ScheduleRule:
         ):
             return None
 
-        # 開始年月 is a *lower* bound on the months the rule applies from: "開始年月
-        # 以降の月についても「1日」が実行日となります". It is set alongside 種別 / 開始日,
+        # 開始年月 acts as a *lower* bound on the months the rule applies from,
+        # and a 開始日 of "day 1" is what supplies the run in each later month.
+        # It is set alongside 種別 / 開始日,
         # which is what actually names the anchor -- so it constrains *which
         # periods the rule covers*, never where inside a period the anchor sits.
         #
@@ -506,14 +561,15 @@ class ScheduleRule:
         Every 開始日 names its anchor against one of three origins, and the 種別
         picks which -- the two axes are not independent:
 
-        * 絶対日 uses **the calendar month** for all three 開始日 forms, because
-          it is the kind that is explicitly 「暦の上での日付（月初めは1日）」.
-        * 相対日 / 運用日 / 休業日 use **the 基準日の指定に基づいた期間**, i.e.
-          the scheduler month, for 月末指定 -- 「基準日の指定に基づいた期間を
-          1か月とし，「月の最終日から何日前」」.
-        * 相対日 counts 日付指定 from **the 基準日 itself** -- 「基準日として
-          指定した日付から起算した日付で，「何日」という形で日付を指定す
-          る」 -- while 絶対日 counts it from the calendar month's first day.
+        * 絶対日 uses **the calendar month** for all three 開始日 forms: it is the
+          kind that reads the date off the calendar, where the month begins on
+          the 1st.
+        * 相対日 / 運用日 / 休業日 use **the period the 基準日 defines**, i.e. the
+          scheduler month, for 月末指定 -- 月末指定 measures its N days back from
+          the end of that period.
+        * 相対日 counts 日付指定 from **the 基準日 itself**, while 絶対日 counts it
+          from the calendar month's first day: both spell a day as "day N", and
+          the 基準日 is what decides where N is counted from.
 
         Every one of these collapses to the same answer when ``base_day=1``,
         because the 基準日 is then the 1st and the scheduler month is the
@@ -538,7 +594,8 @@ class ScheduleRule:
 
         if self.start_day is StartDay.MONTH_END:
             if relative_to_period:
-                # 「基準日の指定に基づいた期間を1か月とし，月の最終日から何日前」
+                # 月末指定 counts back from the end of the period the 基準日
+                # defines, not from the end of the calendar month.
                 return self._from_month_end(period.end, cal)
             return self._from_month_end(_month_end(calendar_month.year, calendar_month.month), cal)
 
@@ -591,8 +648,8 @@ class ScheduleRule:
     def _nth_weekday_in_period(self, period: Period) -> date:
         """曜日指定 counted from the 基準日 rather than the calendar month.
 
-        相対日's 曜日指定 is 「基準日として指定した日付から起算して「第何週目
-        の何曜日」」, so week 1 is the week containing the 基準日. The *first*
+        相対日's 曜日指定 counts weeks from the 基準日, so week 1 is the week
+        containing the 基準日 -- "the Nth <weekday>" as counted from there. The *first*
         occurrence is therefore the first <weekday> on or after ``period.start``,
         and the search runs forward from there without leaving the period -- an
         occurrence past ``period.end`` names the period's last day, the same way
@@ -1149,22 +1206,22 @@ def nth_business_day_from_end(n: int) -> dict:
     )
 
 
-def business_days_before(anchor: ScheduleRule, n: int) -> dict:
+def business_days_before(anchor: ScheduleRule, n: int) -> ScheduleRule:
     """Shift an anchor rule ``n`` working days earlier (起算スケジュール)."""
     return replace(anchor, offset=-n, count=Count.OPERATING, offset_grace_days=60)
 
 
-def business_days_after(anchor: ScheduleRule, n: int) -> dict:
+def business_days_after(anchor: ScheduleRule, n: int) -> ScheduleRule:
     """Shift an anchor rule ``n`` working days later (起算スケジュール)."""
     return replace(anchor, offset=n, count=Count.OPERATING, offset_grace_days=60)
 
 
-def calendar_days_before(anchor: ScheduleRule, n: int) -> dict:
+def calendar_days_before(anchor: ScheduleRule, n: int) -> ScheduleRule:
     """Shift an anchor rule ``n`` plain days earlier (ignores working days)."""
     return replace(anchor, offset=-n, count=Count.CALENDAR)
 
 
-def calendar_days_after(anchor: ScheduleRule, n: int) -> dict:
+def calendar_days_after(anchor: ScheduleRule, n: int) -> ScheduleRule:
     """Shift an anchor rule ``n`` plain days later (ignores working days)."""
     return replace(anchor, offset=n, count=Count.CALENDAR)
 

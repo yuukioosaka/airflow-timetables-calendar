@@ -68,7 +68,6 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from enum import Enum
-from functools import cache
 
 from airflow.timetables.trigger import CronTriggerTimetable
 from croniter import croniter
@@ -76,7 +75,7 @@ from croniter import croniter
 from ._timezones import convert_to_utc, make_aware, make_naive, parse_timezone
 from .calendars import (
     NO_CALENDAR,
-    _country_calendar,
+    _holiday_name,
     available_country_calendars,
     available_exchange_calendars,
     resolve_calendar,
@@ -95,8 +94,14 @@ _MAX_STEPS = 400
 _MAX_HOUR_OFFSET = 47
 
 
-@cache
-def _parse_date(value: str) -> date:
+def _parse_date(value: str | date) -> date:
+    """Coerce an ISO string to a ``date``; pass a ``date`` through unchanged.
+
+    Accepts both at runtime because ``serialize()`` round-trips these lists as
+    ISO strings while callers routinely pass real ``date`` objects. Not cached:
+    a ``date`` is hashable so caching would be possible, but the list is small
+    and bounded by the caller, so a process-wide cache would only leak entries.
+    """
     return date.fromisoformat(value) if isinstance(value, str) else value
 
 
@@ -338,10 +343,10 @@ class CalendarTimetable(CronTriggerTimetable):
             # `holidays` is the only registry with names; exchange calendars and
             # the NONE calendar have nothing to report.
             return None
-        calendar = _country_calendar(self._calendar_code)
-        if calendar is None:
-            return None
-        name = calendar.get(day)
+        # Goes through the module helper rather than touching the shared
+        # calendar object directly: that object mutates as it lazily expands,
+        # so every query into it has to be serialised.
+        name = _holiday_name(self._calendar_code, day)
         return str(name) if name else None
 
     def matches_rules(self, day: date) -> bool:

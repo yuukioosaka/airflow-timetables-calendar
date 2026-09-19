@@ -26,6 +26,7 @@ Where a code exists in both, an explicit prefix forces one:
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import date
 from functools import cache
 from typing import Protocol, runtime_checkable
@@ -99,13 +100,76 @@ def _subdivisions(country_code: str) -> tuple[str, ...]:
     return tuple(supported.get(country_code.upper(), ()))
 
 
-@cache
+#: Serialises every ``holidays`` query. See :func:`_holiday_name` for why a
+#: shared calendar object cannot simply be queried from several threads.
+_holidays_lock = threading.RLock()
+
+#: Memo for :func:`_country_calendar`, keyed by normalised code. Populated and
+#: read under :data:`_holidays_lock`, so it is a plain dict rather than an
+#: ``@cache``: the lock has to span the construction *and* the lookup, and a
+#: decorator cannot be held open across that window.
+_holidays_calendars: dict[str, object] = {}
+
+
+def _holiday_name(calendar_id: str, day: date) -> str | None:
+    """The name ``holidays`` gives ``day``, or None if it is not a holiday.
+
+    The only entry point into the ``holidays`` library, and it holds
+    :data:`_holidays_lock` throughout.
+
+    Why a lock, when the library is used single-threaded elsewhere: ``holidays``
+    populates lazily and keeps the year it is working on in ``self._year``,
+    which is *instance* state written on a read path. Consumers read it back
+    after the fact -- the substitute-holiday search (``_get_next_workday``, how
+    a Sunday holiday becomes the following Monday) loops ``while dt_work.year ==
+    self._year``; ``_add_observed`` rebuilds ``(month, day)`` arguments as
+    dates; every ``_populate_*_holidays`` method reads it to pick the year's
+    rules. So a second thread querying the *same* instance mid-population
+    overwrites ``_year`` and the first thread finishes its work against the
+    wrong year.
+
+    That corruption is real but not reachable through this module at present:
+    a nested population for another year does leave the year empty with ``JP``
+    (the substitute search exits on its first iteration, so ``2031-01-01`` is
+    reported as a working day), but one year populates in ~0.16 ms, and
+    hammering a shared instance from six threads across 48 years produced no
+    mismatch. The lock is therefore preventive rather than a bug fix: it makes
+    an instance shared across the scheduler's threads behave exactly like one
+    used single-threaded, and the cost is not measurable against a calendar
+    query. If a future ``holidays`` widens that window, the hazard is already
+    closed. ``tests/test_calendars.py`` pins both the invariant and the
+    forced-corruption characterisation.
+
+    The lock is re-entrant because ``_populate()`` reaches ``__contains__``
+    through ``_add_observed`` and ``_get_next_workday``, i.e. while it is held.
+
+    The instance is memoised by *code* only, never by year: the rule engine asks
+    about a band of years around each candidate date (``matches()`` walks an
+    epoch window), so a fresh instance per call would re-derive them every time.
+    """
+    if _optional_import("holidays") is None:
+        return None
+
+    # The lock covers the lookup *and* the query: `calendar.get()` is what
+    # triggers lazy expansion, and that expansion is the part that corrupts
+    # shared state.
+    with _holidays_lock:
+        calendar = _country_calendar(calendar_id)
+        if calendar is None:
+            return None
+        return calendar.get(day)
+
+
 def _country_calendar(calendar_id: str):
     """Return a ``holidays`` calendar for a code, or None.
 
     ``holidays`` covers countries (``"JP"``), subdivisions (``"US-CA"``) and
     financial markets (``"XNYS"``, aliased by ``"NYSE"``), all through the same
     constructor, so one lookup serves all three.
+
+    The returned object holds mutable internal state, so it may be *held* and
+    used for identity/existence checks, but must only be *queried* while
+    :data:`_holidays_lock` is held -- go through :func:`_holiday_name`.
     """
     holidays = _optional_import("holidays")
     if holidays is None:
@@ -113,14 +177,22 @@ def _country_calendar(calendar_id: str):
 
     code = calendar_id.strip().upper().replace("_", "-")
     country, _, subdivision = code.partition("-")
-    try:
-        if subdivision:
-            return holidays.country_holidays(country, subdiv=subdivision)
-        return holidays.country_holidays(country)
-    except NotImplementedError:
-        return None
-    except KeyError:  # unknown subdivision
-        return None
+
+    with _holidays_lock:
+        if code in _holidays_calendars:
+            return _holidays_calendars[code]
+        try:
+            if subdivision:
+                calendar = holidays.country_holidays(country, subdiv=subdivision)
+            else:
+                calendar = holidays.country_holidays(country)
+        except (NotImplementedError, KeyError):
+            # NotImplementedError: no such country. KeyError: unknown
+            # subdivision. Both mean "not a calendar we can answer for", which
+            # is a lookup miss rather than an error.
+            calendar = None
+        _holidays_calendars[code] = calendar
+        return calendar
 
 
 @cache
@@ -136,12 +208,9 @@ def _exchange_calendar(calendar_id: str):
 
 
 def _is_holiday_holidays(calendar_id: str, day: date) -> bool:
-    calendar = _country_calendar(calendar_id)
-    if calendar is None:
-        return False
     # ``holidays`` entries also cover the observed/substitute day, so a Sunday
     # holiday that moves to Monday marks the Monday too.
-    return day in calendar
+    return _holiday_name(calendar_id, day) is not None
 
 
 def _is_holiday_exchange(calendar_id: str, day: date) -> bool:

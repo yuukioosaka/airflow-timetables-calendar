@@ -1025,3 +1025,61 @@ class TestUnsupportedFrequency:
             rule(frequency=Frequency.WEEKLY)
         assert "daily" in str(err.value)
         assert "monthly" in str(err.value)
+
+
+# --------------------------------------------------------------------------- #
+# Unimplemented vocabulary is rejected, not silently ignored
+# --------------------------------------------------------------------------- #
+
+
+class TestUnimplementedVocabularyIsRejected:
+    """``virtual`` (除外) and ``include_start`` have no referent in this engine.
+
+    Both are part of the classical vocabulary, so a transcription can carry
+    them. What must not happen is a rule that sets one and is then honoured as
+    an ordinary rule: 除外 would produce the runs it was meant to remove, and an
+    exclusive 開始年月 has no 開始年月 value to test against. Both are rejected
+    at construction, where the mistake is visible, rather than at resolve time.
+    """
+
+    def test_virtual_is_rejected(self):
+        with pytest.raises(NotImplementedError, match="virtual=True"):
+            ScheduleRule(virtual=True)
+
+    def test_virtual_rejection_names_the_alternative(self):
+        with pytest.raises(NotImplementedError, match="exclude_dates"):
+            ScheduleRule(virtual=True)
+
+    def test_virtual_default_is_accepted(self):
+        # The vocabulary round-trips, so the field exists and defaults off.
+        assert ScheduleRule().virtual is False
+
+    def test_include_start_false_is_rejected(self):
+        with pytest.raises(NotImplementedError, match="include_start=False"):
+            ScheduleRule(include_start=False)
+
+    def test_include_start_rejection_names_the_alternative(self):
+        with pytest.raises(NotImplementedError, match="start_date"):
+            ScheduleRule(include_start=False)
+
+    def test_include_start_default_is_accepted(self):
+        assert ScheduleRule().include_start is True
+
+    @pytest.mark.parametrize("field", ["virtual", "include_start"])
+    def test_rejection_survives_the_serializer_round_trip(self, field):
+        """A round-tripped rule carries plain strings, so the check must run
+        after coercion, not only on the constructor's happy path."""
+        raw = {"kind": "operating", "frequency": "monthly", field: field == "virtual"}
+        if field == "include_start":
+            raw[field] = False
+        with pytest.raises(NotImplementedError):
+            ScheduleRule(**raw)
+
+
+class TestRejectionsAreIndependentOfFrequency:
+    def test_frequency_and_virtual_are_both_checked(self):
+        # An unsupported frequency and a virtual rule are separate mistakes;
+        # whichever is checked first, the caller gets a NotImplementedError
+        # rather than a silently wrong schedule.
+        with pytest.raises(NotImplementedError):
+            ScheduleRule(frequency=Frequency.WEEKLY, virtual=True)

@@ -210,56 +210,52 @@ class TestMonthEnd:
         assert resolve(cal, day="L", shift="prev") == date(2026, 9, 29)
 
 
-class TestLowerRulesWin:
-    """simple_rule gives the *last* listed rule precedence, which makes 除外 work.
+class TestRulePrecedence:
+    """``resolve_rules`` returns the *first* rule that matches, in list order.
 
-    ``resolve_rules`` scans in list order and returns the first match, so callers
-    append 除外 (exclusion) rules. ``virtual`` marks a rule as suppression-only.
+    Note what this class deliberately does **not** claim: that a 除外 rule
+    suppresses anything. ``virtual`` has no effect on resolution -- nothing in
+    this package reads it -- so listing one changes no outcome, and it is now
+    rejected outright at construction (see
+    ``tests/test_rules.py::TestUnimplementedVocabularyIsRejected``). What is
+    tested here is the ordering behaviour those tests were accidentally
+    describing: whichever rule matches first is the one returned.
     """
 
-    def test_an_exclusion_rule_suppresses_an_earlier_inclusion(self, cal):
-        include = ScheduleRule(kind="absolute", day=30)
-        exclude = ScheduleRule(kind="absolute", day=30, virtual=True)
+    def test_the_first_listed_match_wins(self, cal):
+        first = ScheduleRule(kind="absolute", day=30)
+        second = ScheduleRule(kind="absolute", day=30)
 
-        # `resolve_rules` returns the FIRST match in list order. Lower-listed rules have higher
-        # rules higher precedence, so the exclusion has to come first in the
-        # list; listing it last is a silent no-op, which the next test pins.
-        matched = resolve_rules(build_rules([exclude, include]), date(2026, 9, 30), cal)
-        assert matched is not None
-        assert matched.virtual is True
+        matched = resolve_rules(build_rules([first, second]), date(2026, 9, 30), cal)
+        assert matched is first
 
-    def test_listing_the_exclusion_last_is_a_no_op(self, cal):
-        include = ScheduleRule(kind="absolute", day=30)
-        exclude = ScheduleRule(kind="absolute", day=30, virtual=True)
-        matched = resolve_rules(build_rules([include, exclude]), date(2026, 9, 30), cal)
-        assert matched is not None
-        assert matched.virtual is False
+    def test_a_later_rule_is_not_reached_once_one_matches(self, cal):
+        first = ScheduleRule(kind="absolute", day=30)
+        second = ScheduleRule(kind="absolute", day=30)
 
-    def test_without_any_exclusion_the_inclusion_wins(self, cal):
-        include = ScheduleRule(kind="absolute", day=30)
-        matched = resolve_rules(build_rules([include]), date(2026, 9, 30), cal)
-        assert matched is not None
-        assert matched.virtual is False
+        matched = resolve_rules(build_rules([first, second]), date(2026, 9, 30), cal)
+        assert matched is not second
 
-    def test_an_exclusion_does_not_affect_other_days(self, cal):
-        include = ScheduleRule(kind="absolute", day=30)
-        exclude = ScheduleRule(kind="absolute", day=30, virtual=True)
-        rules = build_rules([exclude, include])
-        assert resolve_rules(rules, date(2026, 9, 30), cal).virtual is True
+    def test_no_match_returns_none(self, cal):
+        only = ScheduleRule(kind="absolute", day=30)
+        assert resolve_rules(build_rules([only]), date(2026, 9, 15), cal) is None
+
+    def test_rules_are_only_consulted_for_the_day_asked_about(self, cal):
+        rule = ScheduleRule(kind="absolute", day=30)
+        rules = build_rules([rule])
+        assert resolve_rules(rules, date(2026, 9, 30), cal) is rule
         assert resolve_rules(rules, date(2026, 9, 15), cal) is None
 
-    def test_a_simple_rule_composes_with_an_exclusion(self, cal):
+    def test_a_simple_rule_composes_with_an_ordinary_rule(self, cal):
         # Both sides use the absolute form so the assertion does not depend on
-        # the anchor-walk bug recorded in TestAnchorsAreWalkedEvenWhenOpen: this
-        # test is about *precedence*, not about which day the rule lands on.
-        # Exclusions are ordinary rules, so a simple_rule-produced rule composes
-        # with them exactly the same way.
+        # the anchor-walk behaviour: this test is about *precedence*, not about
+        # which day a rule lands on.
         include = ScheduleRule(kind="absolute", day=30)
         assert include.resolve(period_for(date(2026, 9, 1)), cal) == date(2026, 9, 30)
 
-        exclude = ScheduleRule(kind="absolute", day=30, virtual=True)
-        matched = resolve_rules(build_rules([exclude, include]), date(2026, 9, 30), cal)
-        assert matched is not None and matched.virtual is True
+        other = ScheduleRule(kind="absolute", day=30)
+        matched = resolve_rules(build_rules([other, include]), date(2026, 9, 30), cal)
+        assert matched is other
 
 
 class TestSimpleRuleVocabulary:

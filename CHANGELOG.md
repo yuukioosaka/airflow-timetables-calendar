@@ -5,6 +5,58 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-20
+
+### Changed
+
+- **Breaking.** `ScheduleRule(virtual=True)` now raises `NotImplementedError`
+  instead of being accepted. `virtual` (除外) is part of the vocabulary, but no
+  code in this package consults the flag: `resolve_rules` returns the first
+  matching rule and its callers only ask "does any rule yield this day?", so a
+  virtual rule suppressed nothing and the day it named still ran. A caller who
+  configured an exclusion got the *opposite* of what they asked for, silently.
+  Use the timetable's `exclude_dates` instead. Nothing in this package, its
+  presets, or its documentation set the field, so no working configuration is
+  affected.
+- **Breaking.** `ScheduleRule(include_start=False)` now raises
+  `NotImplementedError` instead of being accepted. The flag is the
+  inclusive/exclusive edge of 開始年月, but a rule carries no 開始年月 value to
+  compare against -- a `Period` is derived from the day under test, so a rule
+  never learns which month it started from. Bound the window with the
+  timetable's `start_date` instead.
+
+### Fixed
+
+- Queries into the `holidays` library are now serialised by a re-entrant lock.
+  `holidays` populates lazily and keeps the year it is working on in
+  `self._year`, which is instance state written on a read path and read back
+  afterwards by the substitute-holiday search (`while dt_work.year ==
+  self._year`), `_add_observed`, and every `_populate_*_holidays` method. A
+  second thread querying the same instance mid-population overwrites `_year`,
+  and with `JP` that leaves a whole year with no holidays at all -- i.e. runs
+  scheduled on days the calendar says are closed. This was not reachable at the
+  `holidays` version tested (one year populates in ~0.16 ms, and six threads
+  across 48 years produced no mismatch), so treat the lock as preventive rather
+  than a fix for an observed failure; it makes a shared instance behave as if
+  used single-threaded, at no measurable cost.
+- `business_days_before()`, `business_days_after()`, `calendar_days_before()`
+  and `calendar_days_after()` were annotated `-> dict` but return a
+  `ScheduleRule`. The annotation is corrected; the returned value is unchanged.
+- `timetable._parse_date` accepted `date` objects at runtime while its signature
+  and `@cache` decorator assumed `str`. The signature is now `str | date` and
+  the cache is gone (the input list is small and caller-bounded, so a
+  process-wide cache would only accumulate entries).
+
+### Documentation
+
+- Verbatim-looking quotations of vendor specification prose were removed from
+  the rule-engine docstrings and replaced with paraphrase. The Japanese domain
+  vocabulary itself (種別, 開始日, 基準日, 月末指定, 運用日, 休止日, 振り替え,
+  起算, ...) is unchanged, as it is industry terminology rather than any
+  vendor's text.
+- `ScheduleRule`'s docstrings for `virtual` and `include_start` now describe
+  what the engine actually does rather than what the vocabulary implies.
+
 ## [0.3.0] - 2026-09-20
 
 ### Changed
