@@ -7,31 +7,59 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+Four documented bugs, all of which turned out to share a single root cause:
+`jobcenter()` built its anchor with `kind=Kind.OPERATING`, so `day=N` meant *the
+Nth working day of the month* rather than *the Nth of the month*. NEC's rule text
+is `＋登録、毎月（日付）、1日、休止日 後シフト、相対 4` — 毎月（日付） (monthly **by
+date**) — so `day=N` must be a 暦日 anchor (`Kind.ABSOLUTE`). An anchor displaced
+by weeks looks exactly like a sign inversion and like a double-counted closure,
+which is why three separate symptoms came from one mistake.
+
+- **`jobcenter(day=N)` is now a calendar day, not a working-day count.** The
+  working-day families remain available as 第n営業日 via `nth_business_day()`.
+  `jobcenter(day=30, shift="prev")` now resolves to 2026-09-30 (it used to give
+  2026-10-19 — the 30th *working* day of September).
+  (`tests/test_jobcenter.py::TestAnchorsAreNotWalkedWhenOpen`)
+- **Negative `相対` lands behind the anchor.** `相対 n` counts `n` working days
+  from the settled anchor, the anchor itself being step 0, in both directions.
+  `jobcenter(day=15, shift="next", relative=-1)` now gives 2026-09-14 where it
+  used to give 2026-09-25. Both of NEC's published examples fall out of this one
+  rule: `相対 4` on `1日` is 月初から5営業日目 and `相対 -2` on `L日` is
+  月末の3営業日前.
+  (`tests/test_jobcenter.py::TestNegativeRelativeCountsBackwards`)
+- **Forward `相対` no longer double-counts closed days.** The 休止日 shift and the
+  起算スケジュール offset are now carried by a *single* walk instead of two
+  chained ones, so a closed day inside the span is crossed once.
+  `jobcenter(day=10, shift="next", relative=1)` gives 2026-09-15 (used to give
+  2026-09-17). The shift step itself is not one of the counted steps.
+- **`前月末営業日` fires again.** This one was unrelated to the anchor kind:
+  `ScheduleRule.matches()` only consulted the period *containing* the queried
+  day, so a rule whose run belongs to the *following* period — which is exactly
+  what `month_offset=-1` produces — was never matched by the per-day question a
+  timetable actually asks. `resolve()` had been returning the right day all
+  along, which is why the bug survived the existing tests. The preset now
+  produces 12 runs a year, each on the last working day of the month it lands in.
+  (`tests/test_serialization.py::TestEquivalenceAcrossAWholeYear`)
+
+Two documented behaviours changed as a direct consequence, and their tests were
+updated rather than kept:
+
+- A closed anchor with the default 実行しない (`Substitution.SKIP`) now produces no
+  run. It previously walked forward into the next working day, because the anchor
+  it was walking from was not the day the rule named.
+- `CalendarTimetable(..., rules=["前月末営業日"], base_day=26).matches_rules(
+  date(2026, 9, 30))` is now `True`: that day is the run of the period anchored in
+  October. It was `False` only because of the `matches()` bug above.
+
 ### Added
 
-- Nothing yet.
-
-### Known issues
-
-These are recorded as `xfail(strict=True)` tests rather than quietly worked
-around. Because the marks are strict, fixing any of them turns the test green,
-and breaking one again turns it into a failure.
-
-- **Negative `相対` is inverted.** A negative `offset` lands *after* the anchor
-  instead of before it: `jobcenter(day=15, shift="next", relative=-1)` resolves
-  to 2026-09-25 where the previous working day, 2026-09-14, is expected.
-  (`tests/test_jobcenter.py::TestNegativeRelativeIsInverted`)
-- **An anchor is walked even when it is already a working day.**
-  `jobcenter(day=30, shift="prev")` resolves to 2026-10-19 although 2026-09-30 is
-  an open Wednesday needing no shift at all.
-  (`tests/test_jobcenter.py::TestAnchorsAreWalkedEvenWhenOpen`)
-- **A forward `相対` double-counts closed days.** Both the holiday-shifting stage
-  and the offset stage step over closed days, so a closed day inside the span is
-  crossed twice.
-- **`前月末営業日` never fires.** `month_offset=-1` puts the anchor in the previous
-  month, which the anchor-month guard then rejects for every period, so the
-  preset produces no runs at all in 2026.
-  (`tests/test_serialization.py::TestEquivalenceAcrossAWholeYear`)
+- `ScheduleRule.shift_direction` records which way the 休止日 shift travels
+  (`+1` 後シフト, `-1` 前シフト, `0` unset). `jobcenter()` sets it so that a closed
+  anchor settles the way its own 休止日 rule says even though the substitution
+  stage is deliberately a no-op there — without it a 前シフト could be dragged
+  forwards by a positive `相対`. It round-trips through the serializer.
 
 ## [0.1.0] - 2026-09-19
 

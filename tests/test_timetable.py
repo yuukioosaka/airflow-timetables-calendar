@@ -149,9 +149,18 @@ class TestRulesDispatch:
 
     def test_base_day_is_passed_through(self):
         # 前月末営業日 with 基準日=26 looks at the *previous period's* month end.
+        # The period containing 09-30 runs 09-26..10-25 and is anchored in
+        # September, so its run is August's last working day (08-31) rather than
+        # September's. 09-30 itself is the run of the *next* period, which is
+        # anchored in October -- a rule reaching backwards lands on a day that
+        # belongs to the preceding period, so both days are runs.
         tt = CalendarTimetable(calendar_id="NONE", rules=["前月末営業日"], base_day=26)
         assert tt.is_working_day(date(2026, 9, 30)) is True
-        assert tt.matches_rules(date(2026, 9, 30)) is False
+        assert tt.matches_rules(date(2026, 8, 31)) is True
+        assert tt.matches_rules(date(2026, 9, 30)) is True
+        # The *containing* period's own run is 08-31, so an ordinary day in the
+        # middle of it stays empty.
+        assert tt.matches_rules(date(2026, 9, 29)) is False
 
 
 class TestExcludeIncludeAndRules:

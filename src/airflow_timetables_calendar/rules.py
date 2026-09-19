@@ -302,6 +302,8 @@ class ScheduleRule:
     :param offset: Final adjustment (JP1 起算スケジュール), signed.
     :param count: What ``offset`` counts.
     :param offset_grace_days: Max distance the offset may travel.
+    :param shift_direction: Direction the 休止日 shift travels when the offset
+        stage is the one that carries a closed anchor onto a working day.
     :param scope: Whether the result must remain inside the anchor period.
     :param frequency: Repeat period (JP1 処理サイクル).
     :param include_start: Whether ``start_date`` itself may produce a run.
@@ -320,6 +322,11 @@ class ScheduleRule:
     offset: int = 0
     count: Count = Count.OPERATING
     offset_grace_days: int = 0
+    #: Direction of the 休止日 shift when it is the *offset* stage that carries
+    #: the date out of a closed anchor: ``+1`` 後シフト, ``-1`` 前シフト, ``0``
+    #: unset. `jobcenter()` sets this so a closed anchor settles the way its own
+    #: 休止日 rule says even though the substitution itself is a no-op there.
+    shift_direction: int = 0
 
     scope: Scope = Scope.FREE
     frequency: Frequency = Frequency.MONTHLY
@@ -556,13 +563,34 @@ class ScheduleRule:
         if self.count is Count.CALENDAR:
             return day + timedelta(days=self.offset)
 
+        # A closed anchor has still to be carried onto a working day before the
+        # count proper begins, and that carry is the 休止日 shift rather than one
+        # of the `n` steps -- so it must not spend one. Without this, JobCenter's
+        # "shift the anchor, then count from it" composition overshoots by a day
+        # whenever the anchor lands on a closed day, and -- because the
+        # substitution and the offset would then both walk -- by one step per
+        # closed day in between.
+        #
+        # When the anchor is already open this is a no-op and the walk is the
+        # plain n-working-days count it has always been.
+        on_shift = not cal.is_working_day(day)
+
         step = 1 if self.offset > 0 else -1
+        # The free step out of a closed anchor belongs to the 休止日 shift, so it
+        # follows the shift's direction when one is known -- 前シフト must settle
+        # on the previous working day even when 相対 points forward.
+        shift_step = self.shift_direction or step
         remaining = abs(self.offset)
         candidate = day
         limit = self.offset_grace_days if self.offset_grace_days else _DEFAULT_GRACE
+
         for _ in range(limit):
-            candidate += timedelta(days=step)
+            candidate += timedelta(days=shift_step if on_shift else step)
             if cal.is_working_day(candidate):
+                if on_shift:
+                    # This is the shift step; the count starts from here.
+                    on_shift = False
+                    continue
                 remaining -= 1
                 if remaining == 0:
                     return candidate
@@ -592,7 +620,23 @@ class ScheduleRule:
             # Each day is eligible, but the day still has to be a working day:
             # 毎営業日 means every *business* day.
             return cal.is_working_day(day)
-        return self.resolve(period, cal) == day
+
+        if self.resolve(period, cal) == day:
+            return True
+
+        # A rule may deliberately place its run *outside* the period it belongs
+        # to -- 前月末営業日 resolves, for period N, to a day in period N-1. Asking
+        # only "which period contains `day`" therefore misses it: the run belongs
+        # to the *following* period, and no period's own resolve() ever returns
+        # the day when the day is queried directly.
+        #
+        # Checking the next period closes that gap. It cannot create false
+        # positives, because a period is defined by its anchor and consecutive
+        # periods do not overlap, so at most one period's resolve() can equal any
+        # given day. (A rule reaching *forwards* would need the previous period
+        # too; none of the presets do, and the backward reach is the documented
+        # 前月末 behaviour.)
+        return self.resolve(period.next(), cal) == day
 
 
 # Bound the substitution / offset walks so a misconfigured rule cannot wander
@@ -625,17 +669,34 @@ def jobcenter(
 
     Mirrors ``+登録、<period>、<day>、休止日 <shift>、相対 <relative>``.
 
-    ``relative`` counts *further* working days from the shifted anchor, which is
-    how JobCenter defines 相対: ``相対 4`` on 1日 is 月初から5営業日目, i.e. the anchor
-    counts as working day 1 and four more are added. NEC's own worked example
-    (補足1: "1日→2目へ後シフト、20日→19日へ前シフト") confirms the shift is applied
-    *before* the count, so the two stages compose the way they are written.
+    ``day`` is a **calendar day of the month**, which is what 毎月（日付） means in
+    NEC's rule text: their worked example is ``＋登録、毎月（日付）、1日、休止日 後
+    シフト、相対 4`` and the documented outcome is 月初から5営業日目. "Day 1" is
+    therefore the 1st, not the month's 1st working day -- the *working*-day
+    families are 第n営業日, built by :func:`nth_business_day` instead. Anything
+    else makes ``day=30`` mean "the 30th working day of the month", which lands in
+    the *following* month and explains three of this module's historical bugs.
 
-    Translated to this module's stages that is ``offset = relative``, but note the
-    ordering differs from JP1: JobCenter shifts the anchor first and counts from
-    the shifted date, whereas JP1's 起算スケジュール would count from the original.
-    The :attr:`Substitution` / :attr:`Count` pair below reproduces JobCenter's
-    ordering, not JP1's.
+    ``relative`` counts *further* working days from the anchor once the anchor
+    has settled, so ``相対 0`` is the anchor itself and ``相対 4`` on 1日 is the
+    5th working day. NEC's second example (``L日``, 前シフト, ``相対 -2`` -> three
+    working days before month end) confirms the anchor is not itself counted as
+    one of the ``relative`` steps.
+
+    The two stages are combined into a *single* walk rather than chained,
+    because chaining them double-steps every closed day in the span:
+
+    * the 休止日 policy is honoured as ``RUN_ANYWAY`` so that the anchor's own
+      substitution stage cannot move the date, and
+    * the whole distance -- including the shift the substitution would have
+      made -- is carried by the offset stage.
+
+    The offset always carries the value of ``relative``; it is
+    :meth:`ScheduleRule._apply_offset` that knows a closed start date needs one
+    free step onto a working day before the count begins. That step follows the
+    休止日 shift's direction (recorded in ``shift_direction``), so 前シフト settles
+    on the *previous* working day even when 相対 points forwards, and it does not
+    consume one of the ``n`` counted days.
 
     :param period: ``"daily"``, ``"weekly"``, ``"monthly"`` or ``"yearly"``.
     :param day: A day number, or ``"L"`` for the last day of the month.
@@ -661,38 +722,53 @@ def jobcenter(
         "frequency": Frequency(period),
         "kind": Kind.OPERATING,
         "substitution": substitution[shift],
+        # 開始年月 bounds the *generated* date, so a 相対 that walks out of the
+        # month produces no run. This is what keeps `relative=-3` from silently
+        # landing in the previous month.
+        "scope": Scope.PERIOD,
     }
 
     if weekday is not None:
         kwargs["start_day"] = StartDay.WEEKDAY
         kwargs["weekday"] = weekday
         kwargs["day"] = day if isinstance(day, int) else 1
+        # The Nth <weekday> is a calendar-date anchor, not a working-day count.
+        kwargs["kind"] = Kind.ABSOLUTE
     elif day in ("L", "l"):
+        # L is the month's last day; 月末指定 counts back from it in 運用日.
         kwargs["start_day"] = StartDay.MONTH_END
         kwargs["day"] = 0
     elif isinstance(day, str):
         raise ValueError(f'day must be an int or "L", got {day!r}')
     else:
+        # 毎月（日付）: an absolute calendar day of the month.
         kwargs["start_day"] = StartDay.DAY
         kwargs["day"] = int(day)
+        kwargs["kind"] = Kind.ABSOLUTE
 
-    offset = relative
-    if offset:
-        kwargs["offset"] = offset
+    if relative:
         kwargs["count"] = Count.OPERATING
         kwargs["offset_grace_days"] = _JOB_CENTER_GRACE
-        if offset > 0:
-            # Forward: 休止日 後シフト runs first, then 相対 steps over any further
-            # closed days. Composing two forward walks in the shift-then-count
-            # order matches "n further working days" exactly.
-            kwargs["substitution"] = Substitution.NEXT
-            kwargs["grace_days"] = _JOB_CENTER_GRACE
-        else:
-            # Backward: the two stages must NOT both walk, or each closed day is
-            # skipped twice and the result overshoots. Let the anchor shift settle
-            # first and give the 相対 walk the whole distance, which is what
-            # JobCenter's "shift, then count backwards from there" produces.
-            kwargs["substitution"] = Substitution.RUN_ANYWAY
+        # Only ONE stage may walk: the substitution must never move the date, so
+        # that the offset's walk is the only thing that steps. (Chaining the two
+        # makes every closed day in the span cost two steps.)
+        kwargs["substitution"] = Substitution.RUN_ANYWAY
+        # 相対 keeps its own sign; the 休止日 shift does not redirect it. NEC's
+        # rule text is "休止日 後シフト、相対 4" -- the shift settles the anchor and
+        # 相対 then counts from that settled day, in 相対's direction. Letting a
+        # 前シフト turn a positive 相対 backwards would make "前シフト、相対 1" move
+        # away from the anchor, which is not what the rule reads as.
+        #
+        # `_apply_offset` carries a closed start date onto the first working day
+        # for free, so the walk begins at the settled anchor without needing the
+        # substitution stage to move anything.
+        kwargs["offset"] = relative
+        kwargs["shift_direction"] = {
+            Substitution.PREVIOUS: -1,
+            Substitution.NEXT: 1,
+        }.get(substitution[shift], 0)
+    elif substitution[shift] in (Substitution.NEXT, Substitution.PREVIOUS):
+        kwargs["grace_days"] = _JOB_CENTER_GRACE
 
     return kwargs
 
@@ -709,6 +785,7 @@ def jp1(
     offset: int = 0,
     count: Count = Count.OPERATING,
     offset_grace_days: int = 0,
+    shift_direction: int = 0,
     frequency: Frequency = Frequency.MONTHLY,
     scope: Scope = Scope.FREE,
 ) -> dict:
@@ -728,6 +805,7 @@ def jp1(
         "offset": offset,
         "count": count,
         "offset_grace_days": offset_grace_days,
+        "shift_direction": shift_direction,
         "frequency": frequency,
         "scope": scope,
     }

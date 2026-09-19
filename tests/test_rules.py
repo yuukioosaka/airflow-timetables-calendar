@@ -385,6 +385,33 @@ class TestMonthOffset:
         )
         assert got == date(2026, 9, 29)
 
+    def test_a_run_that_lands_in_the_previous_month_still_matches(self, calendar):
+        # `resolve()` was never wrong here; `matches()` was. It asked only which
+        # period *contains* the day, so a rule whose run belongs to the following
+        # period -- which is exactly what month_offset=-1 produces -- was invisible
+        # to the per-day question the timetable actually asks. The preset looked
+        # like dead code even though resolve() returned the right day.
+        presets = build_rules(["前月末営業日"])
+        assert resolve_rules(presets, date(2026, 8, 31), calendar) is not None
+        assert presets[0].matches(date(2026, 8, 31), calendar) is True
+        # A day that is nobody's run is still not matched.
+        assert presets[0].matches(date(2026, 8, 28), calendar) is False
+
+    def test_every_period_contributes_exactly_one_run(self, calendar):
+        # Per day, September has exactly one run: 09-30, which is September's own
+        # last working day. It is produced by the *October* period, whose
+        # 前月末営業日 is the month end of September -- which is the whole point of
+        # the preset and exactly what the old `matches()` could not see.
+        #
+        # (August's last working day, 08-31, is the September period's own run,
+        # but it lands outside this month so it is not in this list.)
+        presets = build_rules(["前月末営業日"])
+        runs = [
+            day for day in _september_2026() if resolve_rules(presets, day, calendar) is not None
+        ]
+        assert runs == [date(2026, 9, 30)]
+        assert calendar.is_working_day(runs[0])
+
 
 class TestBaseDayIntegration:
     """Rules evaluated inside a 26th-to-25th business month.

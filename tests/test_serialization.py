@@ -193,25 +193,18 @@ class TestEquivalenceAcrossAWholeYear:
 
     @pytest.mark.parametrize("preset", sorted(BUSINESS_DAY_RULES))
     def test_the_preset_actually_fires_sometimes(self, preset):
-        if preset == "前月末営業日":
-            # month_offset=-1 makes the anchor-month guard reject every period,
-            # so the preset is dead code until that is fixed. See
-            # TestMonthOffsetPresets in test_rules.py for the focused case.
-            pytest.xfail("前月末営業日 never fires: month_offset=-1 is rejected")
         # Guards against a rule that round-trips perfectly because it never runs.
         # 前月末営業日 fires on a day in the *previous* month, so its 2026 count is
-        # 11 rather than 12 -- the January run falls on 2025-12-31.
+        # 12 and every run is the last working day of the month it lands in --
+        # the period-2026-01 run falls on 2025-12-31 and the period-2027-01 run on
+        # 2026-12-31, which is why the year still yields a full twelve.
         tt = CalendarTimetable(calendar_id="JP", hour=21, rules=[preset])
         runs = [day for day in _days_of_2026() if tt.matches_rules(day)]
         assert runs, f"{preset} produced no runs in 2026"
         # Every run must be a working day on the JP calendar.
         assert all(tt.is_working_day(day) for day in runs), preset
         # 毎営業日 is frequency=DAILY: it fires on every one of the year's working
-        # days, not once a month.
-        if preset == "毎営業日":
-            assert len(runs) == 244
-        # 毎営業日 is frequency=DAILY: it fires on every working day of the year,
-        # not once per period. 244 is the JP calendar's working-day count for 2026.
+        # days, not once a month. 244 is the JP calendar's working-day count for 2026.
         if preset == "毎営業日":
             assert len(runs) == 244
         else:
