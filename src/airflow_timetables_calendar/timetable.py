@@ -47,7 +47,9 @@ Use an explicit prefix when a code is ambiguous, e.g. ``"exchange:XLON"`` to
 force ``pandas_market_calendars`` over the ``holidays`` financial calendar.
 
 :param calendar_id: Calendar to follow, or ``"NONE"``.
-:param hour: Hour of day to run, in the timetable's timezone.
+:param hour: Hour to run, in the timetable's timezone. Accepts the 48-hour
+    clock (``-47``..``47``), where an hour outside 0..23 runs on the adjacent
+    calendar day but still counts as a run of the declared business date.
 :param minute: Minute of the hour to run.
 :param timezone: Timezone the hour/minute are interpreted in.
 :param exclude_dates: Extra ``YYYY-MM-DD`` dates to skip.
@@ -64,7 +66,7 @@ force ``pandas_market_calendars`` over the ``holidays`` financial calendar.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import Enum
 from functools import cache
 
@@ -87,9 +89,38 @@ DEFAULT_TIMEZONE = "Asia/Tokyo"
 _MAX_STEPS = 400
 
 
+#: Widest 基準時刻 offset the 48-hour clock allows, in hours. The classical form
+#: is 0:00..47:59, and the negative half is its mirror for "n hours before
+#: midnight, still belonging to today".
+_MAX_HOUR_OFFSET = 47
+
+
 @cache
 def _parse_date(value: str) -> date:
     return date.fromisoformat(value) if isinstance(value, str) else value
+
+
+def _split_hour(hour: int) -> tuple[int, int]:
+    """Split ``hour`` into ``(calendar-day offset, hour within that day)``.
+
+    The classical 48-hour clock lets a job be *scheduled* on one day and *run* on
+    the next: with 基準時刻 08:00 the window 08:00..47:59 is one business day, so
+    "25:00" is 01:00 the following morning while still belonging to the earlier
+    date. Negative hours are the same idea in the other direction -- ``-1`` runs
+    at 23:00 the previous evening and still belongs to today -- which is what a
+    pre-midnight deadline needs.
+
+        >>> _split_hour(21)
+        (0, 21)
+        >>> _split_hour(24)
+        (1, 0)
+        >>> _split_hour(25)
+        (1, 1)
+        >>> _split_hour(-1)
+        (-1, 23)
+    """
+    day_offset, hour_of_day = divmod(hour, 24)
+    return day_offset, hour_of_day
 
 
 class CalendarTimetable(CronTriggerTimetable):
@@ -97,6 +128,28 @@ class CalendarTimetable(CronTriggerTimetable):
 
     Weekends are excluded by the cron expression. ``_get_next`` / ``_get_prev``
     then step over any further non-working day reported by the calendar.
+
+    ``hour`` accepts the **48-hour clock** as well as the ordinary 0..23 range.
+    The classical model expresses a business day as a window rather than a date,
+    so a job may be scheduled on one day and run on the next while still
+    belonging to the earlier date:
+
+    ===========  ======================  ====================
+    ``hour``     runs at                 belongs to
+    ===========  ======================  ====================
+    ``21``       today 21:00             today
+    ``24``       tomorrow 00:00          **today**
+    ``25``       tomorrow 01:00          **today**
+    ``47``       tomorrow 23:00          **today**
+    ``-1``       yesterday 23:00         **today**
+    ``-24``      yesterday 00:00         **today**
+    ===========  ======================  ====================
+
+    "Belongs to" is what the calendar and the ``rules`` are evaluated against,
+    so ``hour=25`` with a month-end rule fires on the last working day of the
+    month and shows up as a run *of* that day, even though the clock reads 01:00
+    on the next. The negative half is the mirror image, for a job that has to
+    finish before midnight and so starts the previous evening.
 
     This derives from the *core* ``CronTriggerTimetable`` rather than the SDK
     one. The SDK base (``airflow.sdk.bases.timetable.BaseTimetable``) is missing
@@ -118,13 +171,24 @@ class CalendarTimetable(CronTriggerTimetable):
         rules: list[dict | ScheduleRule | str] | None = None,
         base_day: int = 1,
     ) -> None:
-        super().__init__(f"{minute} {hour} * * 1-5", timezone=timezone)
+        if not -_MAX_HOUR_OFFSET <= hour <= _MAX_HOUR_OFFSET:
+            raise ValueError(
+                f"hour must be between -{_MAX_HOUR_OFFSET} and {_MAX_HOUR_OFFSET} "
+                f"(the 48-hour clock), got {hour!r}"
+            )
+        self._hour = hour
+        self._day_offset, hour_of_day = _split_hour(hour)
+        self._hour_of_day = hour_of_day
+
+        # The cron expression carries the hour the job actually runs at; the
+        # day offset is applied when deciding which *business* date that run
+        # belongs to (see _business_date). Splitting them is what lets 25:00
+        # both run on the next morning and resolve its rule against today.
+        super().__init__(f"{minute} {hour_of_day} * * 1-5", timezone=timezone)
 
         # Validates the id now, so a typo fails at DAG-parse time with a clear
         # message instead of silently scheduling on holidays.
         self._calendar_kind, self._calendar_code, self._checker = resolve_calendar(calendar_id)
-        if not 0 <= hour <= 23:
-            raise ValueError(f"hour must be between 0 and 23, got {hour!r}")
         if not 0 <= minute <= 59:
             raise ValueError(f"minute must be between 0 and 59, got {minute!r}")
         if not 1 <= base_day <= 31:
@@ -146,7 +210,8 @@ class CalendarTimetable(CronTriggerTimetable):
 
     @property
     def hour(self) -> int:
-        return int(self._expression.split()[1])
+        """The declared hour, which may sit outside 0..23 (48-hour clock)."""
+        return self._hour
 
     @property
     def minute(self) -> int:
@@ -171,6 +236,10 @@ class CalendarTimetable(CronTriggerTimetable):
     @property
     def summary(self) -> str:
         base = f"{self._expression} (calendar: {self.calendar_id}"
+        if self._hour != self._hour_of_day:
+            # The cron shows only the wall-clock hour, so a 48-hour hour has to
+            # be spelled out or two different timetables look identical.
+            base += f", hour: {self._hour}"
         if self._base_day != 1:
             base += f", base day: {self._base_day}"
         if self._rules:
@@ -207,7 +276,20 @@ class CalendarTimetable(CronTriggerTimetable):
     # ------------------------------------------------------- holiday decision
 
     def _local_date(self, moment: datetime) -> date:
+        """The wall-clock date ``moment`` falls on, in the timetable's timezone."""
         return moment.astimezone(self.tz).date()
+
+    def _business_date(self, moment: datetime) -> date:
+        """The 基準日 the run at ``moment`` belongs to.
+
+        With ``hour=21`` this is just the local date. With the 48-hour clock the
+        two diverge by design: a run at ``hour=25`` happens at 01:00 tomorrow but
+        is *today's* run -- 日付は基準日のまま, 時刻だけ翌日 -- so the calendar and
+        the rules are both asked about the earlier date. A negative hour is the
+        mirror image: the run happens the previous evening and still belongs to
+        today.
+        """
+        return self._local_date(moment) - timedelta(days=self._day_offset)
 
     def is_working_day(self, day: date) -> bool:
         """Whether ``day`` produces a run.
@@ -256,7 +338,7 @@ class CalendarTimetable(CronTriggerTimetable):
         return resolve_rules(self._rules, day, self, self._base_day) is not None
 
     def _is_skipped(self, moment: datetime) -> bool:
-        return not self.matches_rules(self._local_date(moment))
+        return not self.matches_rules(self._business_date(moment))
 
     # ------------------------------------------------------------- cron steps
 

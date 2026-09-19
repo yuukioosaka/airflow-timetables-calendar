@@ -143,7 +143,7 @@ the classical model:
 | Concept | Meaning |
 |---|---|
 | base date | where a "month" starts. `base_day=26` makes 2026-08-26..2026-09-25 the "August" business month |
-| base time | how the classical model rolls a *business date* over, so that 08:00..next-day 07:59 is one business day and a run at "25:00" still belongs to the previous date. **Not modelled here**: `CalendarTimetable` uses a plain wall-clock `hour`/`minute`, so the range is 0–23 and a 48-hour-clock schedule cannot be expressed. Use the `timezone` to place the run, and see [Not modelled](#not-modelled) |
+| base time | how the classical model rolls a *business date* over, so that 08:00..next-day 07:59 is one business day and a run at "25:00" still belongs to the previous date. **Partly modelled**: `hour` accepts the 48-hour clock, so a run outside 0..23 is dated to the adjacent day (see [The 48-hour clock](#the-48-hour-clock)). A configurable roll-over *time* other than midnight is still absent |
 | kind | what the offset counts: `ABSOLUTE` calendar date, `RELATIVE` calendar days from the base date (identical to `ABSOLUTE` when `base_day=1`), `OPERATING` working days (→ "the Nth working day"), `CLOSED` closed days, `REGISTERED` the registration date |
 | start day | `DAY` a date of the month, `MONTH_END` days before month end, `WEEKDAY` the Nth weekday. What the resulting day is *measured from* depends on the kind — see [Where a start day is measured from](#where-a-start-day-is-measured-from) |
 | substitution | what to do when the day is closed: `SKIP` do not run, `PREVIOUS` the previous working day, `NEXT` the next working day, `RUN_ANYWAY` do not substitute |
@@ -252,18 +252,44 @@ Custom timetables have to be resolvable when a DAG is deserialized, in every
 Airflow component. Installing the package is enough: an `airflow.plugins` entry
 point registers the timetable and teaches the DAG serializer how to encode it.
 
+## The 48-hour clock
+
+`hour` accepts `-47`..`47`, not just `0`..`23`. A value outside `0`..`23` runs on
+an adjacent calendar day but still belongs to the **business date of the declared
+day**, which is what lets a schedule say "the last working day of the month, at
+01:00 the following morning" and have the run dated to that working day.
+
+| `hour` | runs at | business date |
+|---|---|---|
+| `21` | today 21:00 | today |
+| `24` | tomorrow 00:00 | today |
+| `25` | tomorrow 01:00 | today |
+| `47` | tomorrow 23:00 | today |
+| `-1` | yesterday 23:00 | today |
+| `-24` | yesterday 00:00 | today |
+
+```python
+# Last working day of the month, run at 01:00 the next morning.
+CalendarTimetable(calendar_id="JP", hour=25, rules=["last_business_day_of_month"])
+
+# The working day itself, but one hour before midnight the previous evening.
+CalendarTimetable(calendar_id="JP", hour=-1, rules=["every_business_day"])
+```
+
+Rules are always evaluated against the business date, so the holiday and
+working-day checks are unaffected by the offset. Only the wall-clock moment the
+run is handed to Airflow moves.
+
 ## Not modelled
 
 The rule vocabulary is a *model* of the classical behaviour, not a complete
 reimplementation of any one product. These parts are deliberately absent, and
 the README describes them only so that the rest makes sense:
 
-- **base time / 48-hour clock.** A business date rolling over at, say, 08:00, and
-  the 0:00–47:59 time range that lets a job run at "25:00" and still belong to the
-  previous date. `CalendarTimetable` takes a plain `hour`/`minute` in a
-  `timezone`, so the range is 0–23. A run that must be dated to the previous
-  business day is not expressible; use the offset schedule
-  (`business_days_before`) or a different `hour` instead.
+- **a configurable base time.** The 48-hour clock is supported through `hour`
+  (see [The 48-hour clock](#the-48-hour-clock)), but the roll-over point is fixed
+  at midnight of the timetable's `timezone`. Products that let a business date
+  start at, say, 08:00 are not expressible; shift the run with `hour` instead.
 - **a rule validity end date.** The start year-month bounds a rule from *below*
   only. There is no upper bound, and therefore no interaction between the grace
   window and an expiry — the classical model lets the window override the expiry,

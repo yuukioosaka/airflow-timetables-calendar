@@ -8,7 +8,8 @@ as a *calendar*, so it stays close to the rules engine.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -43,9 +44,14 @@ class TestConstruction:
         assert CalendarTimetable(calendar_id="NONE").calendar_id == "NONE"
         assert CalendarTimetable(calendar_id="exchange:XLON").calendar_id == "exchange:XLON"
 
-    def test_hour_must_be_in_range(self):
-        with pytest.raises(ValueError):
-            CalendarTimetable(calendar_id="JP", hour=24)
+    def test_hour_accepts_the_48_hour_clock(self):
+        for hour in (-47, -24, -1, 0, 9, 21, 23, 24, 25, 47):
+            assert CalendarTimetable(calendar_id="JP", hour=hour).hour == hour
+
+    @pytest.mark.parametrize("hour", [48, -48, 100, -100])
+    def test_hour_outside_the_48_hour_clock_is_rejected(self, hour):
+        with pytest.raises(ValueError, match="48-hour clock"):
+            CalendarTimetable(calendar_id="JP", hour=hour)
 
     def test_minute_must_be_in_range(self):
         with pytest.raises(ValueError):
@@ -182,3 +188,77 @@ class TestExcludeIncludeAndRules:
         )
         assert tt.is_working_day(date(2026, 9, 18)) is False
         assert tt.matches_rules(date(2026, 9, 18)) is True
+
+
+class TestFortyEightHourClock:
+    """The 48-hour clock shifts which business date a run belongs to."""
+
+    HOURS = (-47, -24, -1, 0, 9, 21, 23, 24, 25, 47)
+
+    @pytest.mark.parametrize("hour", HOURS)
+    def test_run_lands_on_a_working_business_date(self, hour):
+        tt = CalendarTimetable(calendar_id="JP", hour=hour, rules=["毎営業日"])
+        moment = datetime(2026, 6, 1, 0, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+        for _ in range(60):
+            moment = tt._get_next(moment)
+            assert tt.is_working_day(tt._business_date(moment)), moment
+
+    @pytest.mark.parametrize("hour", HOURS)
+    def test_get_prev_mirrors_get_next(self, hour):
+        tt = CalendarTimetable(calendar_id="JP", hour=hour, rules=["毎営業日"])
+        moment = datetime(2026, 6, 1, 0, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+        forward = []
+        for _ in range(40):
+            moment = tt._get_next(moment)
+            forward.append(moment)
+
+        backward = []
+        cursor = forward[-1] + timedelta(minutes=1)
+        for _ in range(len(forward)):
+            cursor = tt._get_prev(cursor)
+            backward.append(cursor)
+        backward.reverse()
+
+        assert backward == forward
+
+    @pytest.mark.parametrize(
+        ("hour", "day_offset", "hour_of_day"),
+        [
+            (0, 0, 0),
+            (9, 0, 9),
+            (21, 0, 21),
+            (23, 0, 23),
+            (24, 1, 0),
+            (25, 1, 1),
+            (47, 1, 23),
+            (-1, -1, 23),
+            (-24, -1, 0),
+            (-47, -2, 1),
+        ],
+    )
+    def test_hour_splits_into_offset_and_wall_clock(self, hour, day_offset, hour_of_day):
+        tt = CalendarTimetable(calendar_id="NONE", hour=hour)
+        assert (tt._day_offset, tt._hour_of_day) == (day_offset, hour_of_day)
+
+    @pytest.mark.parametrize(
+        ("hour", "wall", "business"),
+        [
+            (21, "2026-09-18 21:00", "2026-09-18"),
+            (24, "2026-09-19 00:00", "2026-09-18"),
+            (25, "2026-09-19 01:00", "2026-09-18"),
+            (47, "2026-09-19 23:00", "2026-09-18"),
+            (-1, "2026-09-18 23:00", "2026-09-19"),
+            (-24, "2026-09-18 00:00", "2026-09-19"),
+        ],
+    )
+    def test_business_date_shifts_across_the_day_boundary(self, hour, wall, business):
+        tt = CalendarTimetable(calendar_id="NONE", hour=hour)
+        moment = datetime.strptime(wall, "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+        assert tt._business_date(moment).isoformat() == business
+
+    @pytest.mark.parametrize("hour", [-47, -1, 24, 25, 47])
+    def test_serialize_round_trip_keeps_the_declared_hour(self, hour):
+        tt = CalendarTimetable(calendar_id="JP", hour=hour)
+        restored = CalendarTimetable.deserialize(tt.serialize())
+        assert restored.hour == hour
+        assert restored == tt

@@ -5,6 +5,37 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-20
+
+### Added
+
+- **The 48-hour clock.** `CalendarTimetable(hour=...)` now accepts `-47`..`47`
+  instead of `0`..`23`. A run whose declared hour lies outside `0`..`23` is placed
+  on the adjacent calendar day but is still evaluated against the rules of the
+  *declared* day: `hour=25` with `last_business_day_of_month` runs at 01:00 the
+  following morning and belongs to the last working day of the month. The negative
+  half is the mirror image, so `hour=-1` runs at 23:00 the previous evening and
+  still belongs to the declared day.
+  Negative hours and hours below `-47`/above `47` are rejected with a clear
+  `ValueError`.
+  (`tests/test_timetable.py::TestFortyEightHourClock`)
+- `CalendarTimetable` now exposes `is_working_day()` for the resolved calendar.
+- Documentation for the 48-hour clock in `README.md` and `README.JP.md`.
+
+### Changed
+
+- **Breaking.** The month-end and working-day presets were pruned to remove
+  byte-identical duplicates: `第1営業日`/`first_business_day` and
+  `月末営業日`/`last_business_day` were removed. Use `月初営業日`/
+  `first_business_day_of_month` and `当月末営業日`/`last_business_day_of_month`.
+- `summary` now appends `hour: <n>` only when the declared hour lies outside
+  `0`..`23`, so ordinary schedules keep their existing summary text.
+
+### Fixed
+
+- Serialization round-trips the declared `hour` for values outside `0`..`23`
+  rather than the normalised wall-clock hour.
+
 ## [0.1.0] - 2026-09-20
 
 First public release.
