@@ -120,20 +120,22 @@ CalendarTimetable(
 
 | Preset | Meaning |
 |---|---|
-| `first_business_day_of_month` | the month's 1st working day (第1営業日) |
-| `last_business_day_of_month` | the month's last working day (月末営業日) |
+| `first_business_day_of_month` | the month's 1st working day |
+| `last_business_day_of_month` | the month's last working day |
 | `last_business_day_of_previous_month` | the *previous* month's last working day |
 | `business_day_before_month_end` | the working day before the month's last |
 | `next_business_day` | the next working day |
 | `previous_business_day` | the previous working day |
 | `every_business_day` | every working day |
 
-Each preset also has a native-language spelling, which is the canonical key
-because it is what the source definitions are written in. `PRESET_ALIASES` holds
-the English names and `PRESET_LOOKUP` maps every accepted spelling to its
-canonical key, so a tool can offer both. An unknown name raises at DAG-parse time
-and lists every accepted spelling. See [`README.JP.md`](README.JP.md) for the
-native table.
+Each preset has a Japanese spelling and an English name, and both work
+everywhere a preset name is accepted. The canonical key is the Japanese one,
+because that is the vocabulary the definitions are written in; use the English
+name if that is your organisation's vocabulary. Either spelling builds exactly
+the same `ScheduleRule`. `PRESET_ALIASES` holds the English names and
+`PRESET_LOOKUP` maps every accepted spelling to its canonical key, so a tool can
+offer both. An unknown name raises at DAG-parse time and lists every accepted
+spelling. See [`README.JP.md`](README.JP.md) for the Japanese table.
 
 ### The model
 
