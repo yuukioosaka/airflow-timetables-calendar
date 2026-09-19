@@ -25,7 +25,7 @@ Usage::
     # Escape hatch: your own explicit list of non-working days
     CalendarTimetable(calendar_id="NONE", hour=9, exclude_dates=["2026-12-29"])
 
-    # classical-style rules instead of "every working day"
+    # rules from the classical model instead of "every working day"
     from airflow_timetables_calendar import simple_rule, nth_business_day
 
     CalendarTimetable(calendar_id="JP", rules=["月末営業日"], hour=21)
@@ -48,7 +48,7 @@ force ``pandas_market_calendars`` over the ``holidays`` financial calendar.
 :param exclude_dates: Extra ``YYYY-MM-DD`` dates to skip.
 :param include_dates: Extra ``YYYY-MM-DD`` dates to run on, even if the calendar
     would skip them (useful for one-off out-of-hours runs).
-:param rules: classical-style schedule rules (see :mod:`.rules`).
+:param rules: schedule rules (see :mod:`.rules`).
     Accepts preset names, ``verbose_rule()`` / ``simple_rule()`` kwargs dicts, or
     ``ScheduleRule`` objects, in ascending priority. **Empty or None means "run on
     every working day"**, which is the plain holiday-only behaviour and stays the
@@ -207,7 +207,7 @@ class CalendarTimetable(CronTriggerTimetable):
     def is_working_day(self, day: date) -> bool:
         """Whether ``day`` produces a run.
 
-        Public because :mod:`schedule_rules` consumes it: a timetable with no
+        Public because :mod:`.rules` consumes it: a timetable with no
         ``rules`` behaves as a single implicit "every working day" rule, and the
         rule engine delegates back here to decide what a working day is.
         """
@@ -315,7 +315,6 @@ def _rule_to_dict(rule: ScheduleRule) -> dict:
 
 
 # Re-exported for backwards compatibility: these used to be defined here.
-_ = (available_country_calendars, available_exchange_calendars)
 
 __all__ = [
     "DEFAULT_TIMEZONE",

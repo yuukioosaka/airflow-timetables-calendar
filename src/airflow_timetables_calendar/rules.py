@@ -283,7 +283,7 @@ def period_for(day: date, base_day: int = 1) -> Period:
 
 @dataclass(frozen=True)
 class ScheduleRule:
-    """One classical-style schedule rule.
+    """One schedule rule in the classical model.
 
     A rule is only evaluated for the :class:`Period` it falls in, so
     :meth:`resolve` is always anchored to "the occurrence in this month" rather
@@ -398,19 +398,22 @@ class ScheduleRule:
         ):
             return None
 
-        # 開始年月 as it is usually written constrains the date the rule *names*.
-        # Asking it of the anchor, rather than of the final result, is what makes
-        # `simple_rule(day="L", shift="prev", relative=1)` mean "the first working
-        # day after month end" -- previously the result was rejected for landing
-        # outside the period, and the schedule silently never fired at all.
+        # 開始年月 is a *lower* bound on the months the rule applies from: "開始年月
+        # 以降の月についても「1日」が実行日となります". It is set alongside 種別 / 開始日,
+        # which is what actually names the anchor -- so it constrains *which
+        # periods the rule covers*, never where inside a period the anchor sits.
         #
-        # `month_bound` is kept for the one constraint that does still apply after
-        # the move: a date that walks back past the anchor month is rejected.
+        # An earlier version additionally compared the anchor's month against the
+        # period here. Because ``month_offset`` exists precisely to move the
+        # anchor out of the period it is evaluated for (前月末営業日 asks a period
+        # for a day in the *previous* period), that comparison is unsatisfiable
+        # for every ``month_offset != 0`` and silently turned the whole rule into
+        # "no run at all". The 処理サイクル fast path above already enforces the
+        # one month-alignment constraint that is real, and it is deliberately
+        # skipped once the anchor has been moved.
         month_bound: tuple[int, int] | None = None
         if self.scope is Scope.PERIOD:
-            month_bound = (anchor.year, anchor.month)
-            if self.kind is not Kind.REGISTERED and ((period.year, period.month) != month_bound):
-                return None
+            month_bound = (period.year, period.month)
 
         day = self._anchor_day(anchor, cal)
         if day is None:
@@ -425,12 +428,15 @@ class ScheduleRule:
             if day is None:
                 return None
 
-        # 振り替え and 起算 are movements, so the moved date may leave the period --
+        # 振り替え and 起算 are movements, so the moved date may leave the month --
         # 基準日 26 deliberately places the 25th's run on the 26th of the next
-        # month, and 前月末営業日 resolves to the previous period outright. But
-        # 開始年月 does reject a date that walks *back* past the month it names, so
-        # `simple_rule(day=1, shift="next", relative=-3)` still produces no run.
-        if month_bound is not None and (day.year, day.month) < month_bound:
+        # month, and 前月末営業日 resolves to the previous period outright. What
+        # 開始年月 does reject is a date that walks back *past the month the rule
+        # anchors in*, so `simple_rule(day=1, shift="next", relative=-3)` produces
+        # no run. The bound is the anchor's month rather than the period's: with
+        # month_offset the anchor is a different month by design, and comparing
+        # against the period there would reject the move the caller asked for.
+        if month_bound is not None and (day.year, day.month) < (anchor.year, anchor.month):
             return None
 
         return day
@@ -471,11 +477,35 @@ class ScheduleRule:
         raise AssertionError(f"unhandled kind {self.kind!r}")
 
     def _nth_weekday(self, anchor: date) -> date:
-        """曜日指定: the Nth <weekday> of the anchor's month."""
+        """曜日指定: the Nth <weekday> of the anchor's month.
+
+        ``day`` has no upper bound of its own, so it is clamped to the anchor
+        month's last day. Without the clamp ``day=5`` walks into the *next* month
+        in every month that has only four of that weekday -- and ``day=28`` walks
+        seven months out -- because the date is computed by adding whole weeks
+        from the first occurrence. That puts the anchor outside the very month it
+        was named in, which contradicts 曜日指定 ("the Nth <weekday> **of the
+        month**") and is unreachable by construction in the vocabularies this
+        models. Clamping matches how the day-based 開始日 forms already behave: an
+        out-of-range ``day`` names the month's last day rather than a day of
+        another month.
+        """
         if self.weekday is None:
             raise ValueError("start_day=WEEKDAY requires weekday=<Weekday>")
         first = date(anchor.year, anchor.month, 1)
+        last_of_month = date(anchor.year, anchor.month, _days_in_month(anchor.year, anchor.month))
         delta = (self.weekday.index - first.weekday()) % 7
+        # The Nth occurrence may not exist (a month has at most five of any
+        # weekday, and most have four), and ``day`` has no bound of its own.
+        # ``last_occurrence`` is inclusive: day == last_occurrence is the real
+        # final occurrence, and only day > last_occurrence has to be clamped.
+        # Walk to the anchor month's *last day* in that case rather than
+        # stepping into the following month, which is what a plain
+        # ``first + 7 * (day - 1)`` does -- and which would put the anchor
+        # outside the very month it was named in.
+        last_occurrence = (last_of_month.day - 1 - delta) // 7 + 1
+        if self.day > last_occurrence:
+            return last_of_month
         return first + timedelta(days=delta + 7 * (self.day - 1))
 
     def _from_month_end(self, anchor: date, cal: WorkingDayCalendar) -> date | None:
@@ -512,29 +542,55 @@ class ScheduleRule:
     def _nth_working_day_back_from(
         self, last: date, n: int, cal: WorkingDayCalendar
     ) -> date | None:
-        return self._scan(last, -1, n, cal.is_working_day)
+        # 月末指定 counts *within* the anchor month: the walk starts at the
+        # month's last day and must not leave the month. A month with fewer
+        # than ``n + 1`` 運用日 therefore yields no run rather than a day of a
+        # neighbouring month -- the same 開始日 semantics the other families
+        # already have, and the reason ``matches()`` can bound the epochs a run
+        # may have come from.
+        first = date(last.year, last.month, 1)
+        return self._scan(last, -1, n, cal.is_working_day, floor=first)
 
     def _nth_closed_day_back_from(self, last: date, n: int, cal: WorkingDayCalendar) -> date | None:
-        return self._scan(last, -1, n, lambda d: not cal.is_working_day(d))
+        first = date(last.year, last.month, 1)
+        return self._scan(last, -1, n, lambda d: not cal.is_working_day(d), floor=first)
 
     @staticmethod
-    def _scan(start: date, step: int, n: int, predicate: Callable[[date], bool]) -> date | None:
+    def _scan(
+        start: date,
+        step: int,
+        n: int,
+        predicate: Callable[[date], bool],
+        floor: date | None = None,
+    ) -> date | None:
         """Walk from ``start`` until ``n`` matching days have been *skipped*.
 
         The first matching day is the answer when ``n == 0``, so this never
         returns a day it walked past.
 
-        The walk is deliberately unbounded in wall-clock terms and stops only when
-        the date arithmetic itself gives out. Bounding it by a step count was a
-        bug: ``1900`` steps is barely five years, which silently returned ``None``
+        The walk is unbounded in wall-clock terms and stops when the date
+        arithmetic itself gives out. Bounding it by a step count was a bug:
+        ``1900`` steps is barely five years, which silently returned ``None``
         ("no run this period") for requests that have a perfectly good answer.
-        Walking day-by-day over a century of ``date`` objects costs microseconds,
-        so there is no reason to cap it -- and unlike the grace windows, a large
-        count here is a legitimate request, not a configuration error.
+        Walking day-by-day over a century of ``date`` objects costs
+        microseconds, so there is no reason to cap it -- and unlike the grace
+        windows, a large count here is a legitimate request, not a
+        configuration error.
+
+        ``floor`` bounds the walk to a caller-supplied window instead. 月末指定
+        counts within the anchor month, so it passes the month's first day: a
+        month that lacks the requested number of 運用日 / 休業日 produces no run
+        rather than a day of a neighbouring month. Leaving it unbounded here
+        put the anchor outside the month it was derived from, which also made
+        the epoch a run came from impossible to bound.
         """
         day = start
         remaining = n
         while True:
+            if floor is not None and ((step < 0 and day < floor) or (step > 0 and day > floor)):
+                # Ran out of the window the caller allows: no run, rather
+                # than walking into the neighbouring period.
+                return None
             if predicate(day):
                 if remaining == 0:
                     return day
@@ -625,19 +681,24 @@ class ScheduleRule:
         every working day is a run. Without this check "毎営業日" would only match the
         month's first working day -- its anchor -- and mean "毎月1営業日".
 
-        A MONTHLY rule matches a day in a month it is not anchored to, as long as
-        some neighbouring period's own resolution lands on that day. Both
-        directions occur:
+        A MONTHLY rule matches a day in a period it is not anchored to, as long
+        as some other period's own resolution lands on that day. A run reaches
+        across a period boundary for several independent reasons, and they
+        compose:
 
-        * 前月末営業日 resolves, for period N, to a day in period N-1, so the day is
-          the run of the period *after* the one containing it.
+        * 前月末営業日 resolves, for period N, to a day in period N-1.
         * A forward 相対 that crosses the month end (`day="L", relative=1`)
-          resolves, for period N, to a day in period N+1, so the day is the run of
-          the period *before* the one containing it.
+          resolves, for period N, to a day in period N+1.
+        * Either of those movements can be combined with ``month_offset``, which
+          moves the anchor by any number of periods at all.
 
-        Hence both neighbours are consulted. They cannot produce a false positive:
-        periods are defined by their anchors and consecutive periods do not
-        overlap, so at most one period's ``resolve()`` can equal any given day.
+        So the day is offered to the rule at the epoch that produced it, and that
+        epoch is recovered from the day arithmetically rather than by scanning.
+        See the body for why a bounded neighbour scan cannot be correct.
+
+        This cannot produce a false positive: periods are defined by their
+        anchors and consecutive periods do not overlap, so at most one epoch's
+        ``resolve()`` can equal any given day.
         """
         period = period_for(day, base_day)
         if self.frequency is Frequency.DAILY:
@@ -645,11 +706,48 @@ class ScheduleRule:
             # 毎営業日 means every *business* day.
             return cal.is_working_day(day)
 
-        return (
-            self.resolve(period, cal) == day
-            or self.resolve(period.prev(), cal) == day
-            or self.resolve(period.next(), cal) == day
-        )
+        # A run reaches a neighbouring period for two independent reasons, and
+        # they compose -- so a bounded scan of "the containing period and its
+        # neighbours" is not enough. With ``base_day=26`` a ``StartDay.DAY``
+        # anchor whose ``day`` is below the 基準日 sits in the period *before* the
+        # one it was built from, and a backward movement pushes it one period
+        # further still, so ``day=1, offset=-1`` lands two periods behind its
+        # epoch. ``month_offset`` is unbounded on top of that.
+        #
+        # The producing epoch is therefore recovered arithmetically. A day in
+        # period ``q`` was produced by an epoch ``p`` with
+        #
+        #     q = (p moved by month_offset) + m,    m = -margin .. +margin
+        #
+        # where ``m`` counts the whole periods the anchor's own position within
+        # its period plus any 振り替え / 起算 can add. ``_period_margin`` bounds
+        # that from the 猶予日数 windows, which are themselves the bound the
+        # model intends: a movement cannot travel further than its window allows.
+        margin = self._period_margin()
+        for offset in range(-margin, margin + 1):
+            epoch = period
+            for _ in range(abs(offset + self.month_offset)):
+                epoch = epoch.next() if (offset + self.month_offset) < 0 else epoch.prev()
+            if self.resolve(epoch, cal) == day:
+                return True
+        return False
+
+    def _period_margin(self) -> int:
+        """How many whole periods a movement of this rule may cross.
+
+        Both walks (振り替え and 起算) are bounded by a *day* window, and a period
+        spans at least 28 days, so ``window // 28 + 2`` is a safe bound on the
+        periods it can reach. An unset window means the default grace, which is
+        what :meth:`_substitute` and :meth:`_apply_offset` use.
+        """
+        window = 0
+        if self.substitution in (Substitution.NEXT, Substitution.PREVIOUS):
+            window = max(window, self.grace_days or _DEFAULT_GRACE)
+        if self.offset:
+            window = max(window, self.offset_grace_days or _DEFAULT_GRACE)
+        if window == 0:
+            return 1
+        return window // 28 + 2
 
 
 # Bound the substitution / offset walks so a misconfigured rule cannot wander

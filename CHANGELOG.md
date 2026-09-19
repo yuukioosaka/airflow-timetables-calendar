@@ -76,14 +76,54 @@ updated rather than kept:
   date(2026, 9, 30))` is now `True`: that day is the run of the period anchored in
   October. It was `False` only because of the `matches()` bug above.
 
+Three further defects, found in review and all equally silent: the DAG parsed,
+the schedule simply never fired, or fired on a day nobody asked for. They survived
+the round above because the only `month_offset` coverage was `-1` with
+`Scope.FREE` — precisely the one combination that happened to work.
+
+- **`month_offset` now composes with `Scope.PERIOD`.** `resolve()` compared the
+  *moved* anchor's month against the period a second time, at a gate that did not
+  skip when `month_offset` was set. Since `month_offset` exists precisely to move
+  the anchor out of the period it is evaluated for, that comparison is
+  unsatisfiable for every non-zero offset, so 前月末営業日 combined with 開始年月
+  resolved to `None` in every period. 開始年月 is a lower bound on the months a
+  rule applies from — *"開始年月以降の月についても「1日」が実行日となります"* — and is
+  set alongside 種別 / 開始日, which name the anchor; it does not constrain where
+  inside a period the anchor sits. The redundant gate is gone.
+  (`tests/test_rule_fixes.py::TestScopeWithMonthOffset`)
+- **`matches()` finds the period that produced a day, for any `month_offset`.**
+  It scanned only the containing period and its two neighbours, which silently
+  dropped every `|month_offset| >= 2` — the schedule never fired, with no error
+  anywhere. A bounded scan cannot be correct either, because a run crosses *two*
+  period boundaries when an unaligned anchor is combined with a movement: with
+  `base_day=26`, `day=1, offset=-1` resolves to a day two periods behind its
+  epoch. The producing epoch is now recovered arithmetically, bounded by the
+  猶予日数 windows, and cross-checked against `resolve()` over a randomised sweep
+  of 5,952 rule/day combinations.
+  (`tests/test_rule_fixes.py::TestMatchesFindsTheProducingEpoch`)
+- **曜日指定 no longer leaves the month it names.** `_nth_weekday` computed the
+  anchor as `first + 7 * (day - 1)` with no bound, so any `day` beyond the month's
+  last occurrence walked into the following month — `day=5` in February 2026 gave
+  2026-03-01, and `day=28` gave 2026-08-09. 曜日指定 means "the Nth <weekday> of
+  the month", so an occurrence that does not exist now names the anchor month's
+  last day, matching how the day-based 開始日 forms already clamp an out-of-range
+  `day`. (`tests/test_rule_fixes.py::TestWeekdayStartDayStaysInTheMonth`)
+- **月末指定 no longer walks out of the anchor month.** `_nth_closed_day_back_from`
+  and `_nth_working_day_back_from` scanned backwards without a floor, so a month
+  with fewer than the requested 休業日 produced a date in a neighbouring month
+  instead of producing no run. `_scan()` takes an optional `floor` for this.
+
 ### Changed
 
-- `Scope.PERIOD` now means what 開始年月 says: the rule is bound to the **month
-  its anchor falls in**. The anchor must lie in that month, and a movement that
-  walks *back* past it still produces no run — but 振り替え (holiday substitution)
-  and a forward 起算 may carry the date out of the period, which is what they are
-  for. Previously the constraint was applied to the period at both stages, which
-  turned valid schedules into silent no-ops. `Scope.FREE` is unchanged.
+- `Scope.PERIOD` (開始年月) is now a bound on **the months a rule applies from**
+  rather than a second, independent check on the anchor's month. 開始年月 is set
+  alongside 種別 / 開始日, which are what name the anchor, so it constrains which
+  periods the rule covers — not where inside a period the anchor sits. The
+  alignment constraint that *is* real (a day-based 開始日 whose anchor month cannot
+  match the period) is still enforced by the 処理サイクル fast path, which is
+  deliberately skipped once `month_offset` has moved the anchor. A movement may
+  carry the result forward or backward out of the period, which is what 振り替え
+  and 起算 are for. `Scope.FREE` is unchanged.
 
 ### Added
 
