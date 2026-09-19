@@ -91,7 +91,7 @@ from airflow_timetables_calendar import (
 )
 
 # Preset names
-CalendarTimetable(calendar_id="JP", hour=21, rules=["last_business_day"])
+CalendarTimetable(calendar_id="JP", hour=21, rules=["last_business_day_of_month"])
 
 # The 10th working day, and the month's last working day
 CalendarTimetable(
@@ -120,10 +120,8 @@ CalendarTimetable(
 
 | Preset | Meaning |
 |---|---|
-| `first_business_day` | the month's 1st working day |
-| `first_business_day_of_month` | the month's opening working day |
-| `last_business_day` | the month's last working day |
-| `last_business_day_of_month` | the current month's last working day |
+| `first_business_day_of_month` | the month's 1st working day (第1営業日) |
+| `last_business_day_of_month` | the month's last working day (月末営業日) |
 | `last_business_day_of_previous_month` | the *previous* month's last working day |
 | `business_day_before_month_end` | the working day before the month's last |
 | `every_business_day` | every working day |

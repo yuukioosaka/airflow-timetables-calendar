@@ -67,7 +67,7 @@ class TestSerializerRegistration:
 
 class TestPayloadShape:
     def test_serialize_returns_a_json_safe_dict(self):
-        tt = CalendarTimetable(calendar_id="JP", hour=21, rules=["月末営業日"])
+        tt = CalendarTimetable(calendar_id="JP", hour=21, rules=["当月末営業日"])
         payload = tt.serialize()
         assert isinstance(payload, dict)
         json.dumps(payload)  # must not raise
@@ -116,7 +116,7 @@ class TestRoundTrip:
             base_day=26,
             exclude_dates=[date(2026, 12, 31)],
             include_dates=[date(2026, 1, 2)],
-            rules=["月末営業日"],
+            rules=["当月末営業日"],
         )
         rt = CalendarTimetable.deserialize(tt.serialize())
         assert rt.calendar_id == tt.calendar_id
@@ -159,7 +159,7 @@ class TestRoundTrip:
         assert rt.is_working_day(date(2026, 9, 21)) is True
 
     def test_deserialize_accepts_an_already_parsed_dict(self):
-        tt = CalendarTimetable(calendar_id="JP", rules=["月末営業日"])
+        tt = CalendarTimetable(calendar_id="JP", rules=["当月末営業日"])
         rt = CalendarTimetable.deserialize(tt.serialize())
         assert rt.rules == tt.rules
 
@@ -216,7 +216,7 @@ class TestEquivalenceAcrossAWholeYear:
             calendar_id="JP",
             hour=21,
             base_day=26,
-            rules=["月末営業日", "月初営業日", nth_business_day_from_end(3)],
+            rules=["当月末営業日", "月初営業日", nth_business_day_from_end(3)],
             exclude_dates=[date(2026, 8, 31)],
         )
         rt = CalendarTimetable.deserialize(tt.serialize())
@@ -232,7 +232,7 @@ class TestAirflowDagSerialization:
 
         dag = DAG(
             dag_id="_pkg_serialization_probe",
-            schedule=CalendarTimetable(calendar_id="JP", hour=21, rules=["月末営業日"]),
+            schedule=CalendarTimetable(calendar_id="JP", hour=21, rules=["当月末営業日"]),
             start_date=datetime(2026, 1, 1),
         )
         # In Airflow 3 the serializer class is `DagSerialization`; `SerializedDAG`

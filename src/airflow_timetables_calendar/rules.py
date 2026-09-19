@@ -1007,15 +1007,7 @@ def verbose_rule(
 #: accepted anywhere a preset name is accepted, and both produce an identical
 #: :class:`ScheduleRule`.
 BUSINESS_DAY_RULES: dict[str, dict] = {
-    # 月初営業日 / 第n営業日 (anchor-inclusive: 第1営業日 == 月初営業日)
-    "第1営業日": verbose_rule(
-        kind=Kind.OPERATING,
-        start_day=StartDay.DAY,
-        day=1,
-        substitution=Substitution.NEXT,
-        grace_days=30,
-        frequency=Frequency.MONTHLY,
-    ),
+    # 月初営業日 (anchor-inclusive: 第1営業日)
     "月初営業日": verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.DAY,
@@ -1024,15 +1016,7 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
         grace_days=30,
         frequency=Frequency.MONTHLY,
     ),
-    # 月末営業日 / 当月末営業日
-    "月末営業日": verbose_rule(
-        kind=Kind.OPERATING,
-        start_day=StartDay.MONTH_END,
-        day=0,
-        substitution=Substitution.PREVIOUS,
-        grace_days=30,
-        frequency=Frequency.MONTHLY,
-    ),
+    # 当月末営業日 (the current month's last working day)
     "当月末営業日": verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.MONTH_END,
@@ -1071,9 +1055,7 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
 #: language only -- :func:`build_rules` resolves through this table, and
 #: ``tests/test_rules.py`` asserts the two views cover the same rules.
 PRESET_ALIASES: dict[str, str] = {
-    "first_business_day": "第1営業日",
     "first_business_day_of_month": "月初営業日",
-    "last_business_day": "月末営業日",
     "last_business_day_of_month": "当月末営業日",
     "last_business_day_of_previous_month": "前月末営業日",
     "business_day_before_month_end": "月末前営業日",

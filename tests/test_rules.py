@@ -559,8 +559,8 @@ class TestPresetAliases:
         with pytest.raises(KeyError) as err:
             build_rules(["月末"])
         message = str(err.value)
-        assert "月末営業日" in message  # canonical
-        assert "last_business_day" in message  # alias
+        assert "当月末営業日" in message  # canonical
+        assert "last_business_day_of_month" in message  # alias
 
 
 class TestStartDayOriginFollowsTheKind:
@@ -691,7 +691,7 @@ class TestPresets:
         assert not daily.matches(date(2026, 9, 10), calendar)  # closed
 
     def test_monthly_preset_matches_only_its_own_occurrence(self, calendar):
-        monthly = rule(**BUSINESS_DAY_RULES["第1営業日"])
+        monthly = rule(**BUSINESS_DAY_RULES["月初営業日"])
         assert monthly.frequency is Frequency.MONTHLY
         assert monthly.matches(date(2026, 9, 1), calendar)
         assert not monthly.matches(date(2026, 9, 15), calendar)
@@ -699,31 +699,37 @@ class TestPresets:
     def test_monthly_and_daily_differ_on_the_same_month(self, calendar):
         # The regression guard for the frequency check: a monthly preset must not
         # widen into "every day" just because the machinery is shared.
-        monthly = rule(**BUSINESS_DAY_RULES["第1営業日"])
+        monthly = rule(**BUSINESS_DAY_RULES["月初営業日"])
         daily = rule(**BUSINESS_DAY_RULES["毎営業日"])
         assert [d for d in _september_2026() if monthly.matches(d, calendar)] == [date(2026, 9, 1)]
         assert [d for d in _september_2026() if daily.matches(d, calendar)] == [
             d for d in _september_2026() if calendar.is_working_day(d)
         ]
 
-    def test_month_end_and_this_month_end_agree(self, calendar):
-        a = rule(**BUSINESS_DAY_RULES["月末営業日"]).resolve(period_for(date(2026, 9, 1)), calendar)
-        b = rule(**BUSINESS_DAY_RULES["当月末営業日"]).resolve(
-            period_for(date(2026, 9, 1)), calendar
-        )
-        assert a == b == date(2026, 9, 30)
+    def test_month_end_preset_matches_nth_business_day_from_end(self, calendar):
+        # 当月末営業日 is 月末営業日 -- the preset and `nth_business_day_from_end(0)`
+        # are two spellings of one rule, and this pins them together.
+        preset = rule(**BUSINESS_DAY_RULES["当月末営業日"])
+        composed = rule(**nth_business_day_from_end(0))
+        period = period_for(date(2026, 9, 1))
+        assert preset.resolve(period, calendar) == composed.resolve(period, calendar)
+        assert preset.resolve(period, calendar) == date(2026, 9, 30)
 
-    def test_first_business_day_and_month_start_agree(self, calendar):
-        a = rule(**BUSINESS_DAY_RULES["第1営業日"]).resolve(period_for(date(2026, 9, 1)), calendar)
-        b = rule(**BUSINESS_DAY_RULES["月初営業日"]).resolve(period_for(date(2026, 9, 1)), calendar)
-        assert a == b == date(2026, 9, 1)
+    def test_month_start_preset_matches_nth_business_day(self, calendar):
+        # 月初営業日 is 第1営業日 -- the preset and `nth_business_day(1)` are two
+        # spellings of one rule, and this pins them together.
+        preset = rule(**BUSINESS_DAY_RULES["月初営業日"])
+        composed = rule(**nth_business_day(1))
+        period = period_for(date(2026, 9, 1))
+        assert preset.resolve(period, calendar) == composed.resolve(period, calendar)
+        assert preset.resolve(period, calendar) == date(2026, 9, 1)
 
 
 class TestBuildRules:
     def test_accepts_names_dicts_and_rules(self):
         rules = build_rules(
             [
-                "第1営業日",
+                "月初営業日",
                 nth_business_day_from_end(0),
                 rule(kind=Kind.ABSOLUTE, day=20),
             ]
@@ -732,7 +738,7 @@ class TestBuildRules:
         assert all(isinstance(r, ScheduleRule) for r in rules)
 
     def test_preserves_order(self):
-        rules = build_rules(["第1営業日", nth_business_day_from_end(0)])
+        rules = build_rules(["月初営業日", nth_business_day_from_end(0)])
         assert [r.day for r in rules] == [1, 0]
 
     def test_unknown_preset_names_the_valid_ones(self):
@@ -751,7 +757,7 @@ class TestResolveRules:
         assert matched is rules[0]
 
     def test_no_match_returns_none(self, calendar):
-        rules = build_rules(["第1営業日"])
+        rules = build_rules(["月初営業日"])
         assert resolve_rules(rules, date(2026, 9, 15), calendar) is None
 
     def test_first_match_in_list_order_is_returned(self, calendar):

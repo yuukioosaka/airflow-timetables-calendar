@@ -91,8 +91,8 @@ from airflow_timetables_calendar import (
 )
 
 # プリセット名（英語名・日本語名のどちらでも可）
-CalendarTimetable(calendar_id="JP", hour=21, rules=["last_business_day"])
-CalendarTimetable(calendar_id="JP", hour=21, rules=["月末営業日"])  # 同じルール
+CalendarTimetable(calendar_id="JP", hour=21, rules=["last_business_day_of_month"])
+CalendarTimetable(calendar_id="JP", hour=21, rules=["当月末営業日"])  # 同じルール
 
 # 第10営業日 と 月末営業日
 CalendarTimetable(
@@ -124,16 +124,14 @@ CalendarTimetable(
 
 | 英語名 | 日本語名 | 意味 |
 |---|---|---|
-| `first_business_day` | `第1営業日` | その月の最初の営業日 |
-| `first_business_day_of_month` | `月初営業日` | その月の初回営業日 |
-| `last_business_day` | `月末営業日` | その月の最終営業日 |
-| `last_business_day_of_month` | `当月末営業日` | 当月の最終営業日 |
+| `first_business_day_of_month` | `月初営業日` | その月の最初の営業日（第1営業日） |
+| `last_business_day_of_month` | `当月末営業日` | その月の最終営業日（月末営業日） |
 | `last_business_day_of_previous_month` | `前月末営業日` | **前月**の最終営業日 |
 | `business_day_before_month_end` | `月末前営業日` | 月末の前営業日 |
 | `every_business_day` | `毎営業日` | すべての営業日 |
 
 ```python
-CalendarTimetable(calendar_id="JP", hour=21, rules=["last_business_day"])
+CalendarTimetable(calendar_id="JP", hour=21, rules=["last_business_day_of_month"])
 ```
 
 `PRESET_LOOKUP` は受け付ける全綴りを正規キーへ対応付け、`PRESET_ALIASES` は

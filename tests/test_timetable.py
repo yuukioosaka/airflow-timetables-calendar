@@ -116,7 +116,7 @@ class TestRulesDispatch:
     """``rules`` accepts presets, kwargs dicts and rules, mixed."""
 
     def test_a_bare_preset_name_works(self):
-        tt = CalendarTimetable(calendar_id="JP", hour=21, rules=["月末営業日"])
+        tt = CalendarTimetable(calendar_id="JP", hour=21, rules=["当月末営業日"])
         assert tt.matches_rules(date(2026, 9, 30)) is True
         assert tt.matches_rules(date(2026, 9, 29)) is False
 
@@ -129,7 +129,7 @@ class TestRulesDispatch:
         tt = CalendarTimetable(
             calendar_id="JP",
             hour=21,
-            rules=["月末営業日", nth_business_day(1)],
+            rules=["当月末営業日", nth_business_day(1)],
         )
         assert tt.matches_rules(date(2026, 9, 30)) is True
         assert tt.matches_rules(date(2026, 9, 1)) is True

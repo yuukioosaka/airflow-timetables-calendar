@@ -33,7 +33,7 @@ Usage::
         verbose_rule,
     )
 
-    CalendarTimetable(calendar_id="JP", rules=["月末営業日"], hour=21)
+    CalendarTimetable(calendar_id="JP", rules=["当月末営業日"], hour=21)
     CalendarTimetable(calendar_id="JP", rules=[verbose_rule(kind=Kind.ABSOLUTE, day=15)], hour=21)
     CalendarTimetable(
         calendar_id="JP",
