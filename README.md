@@ -74,6 +74,11 @@ MIC code rather than the familiar abbreviation — `XTKS`, not `TSE`. Check
 `available_exchange_calendars()` when in doubt; an unknown id raises
 `UnknownCalendarError` at DAG-parse time rather than scheduling silently.
 
+A query that fails for another reason raises `ExchangeCalendarError` rather than
+being answered as "not a holiday". Treating a failed query as a working day
+would put a run on a date the calendar could not vouch for, which is the silent
+wrongness this package exists to avoid.
+
 ## Business-day rules
 
 `rules` takes preset names, `verbose_rule()` / `simple_rule()` kwargs dicts,
@@ -150,6 +155,7 @@ the classical model:
 | start day | `DAY` a date of the month, `MONTH_END` days before month end, `WEEKDAY` the Nth weekday. What the resulting day is *measured from* depends on the kind — see [Where a start day is measured from](#where-a-start-day-is-measured-from) |
 | substitution | what to do when the day is closed: `SKIP` do not run, `PREVIOUS` the previous working day, `NEXT` the next working day, `RUN_ANYWAY` do not substitute |
 | offset schedule | a final `n` working-day (`OPERATING`) or calendar-day (`CALENDAR`) adjustment |
+| repeat period | the frequency. Only `daily` and `monthly` are implemented; `weekly` and `yearly` are part of the vocabulary but are rejected at construction rather than silently repeating monthly |
 | grace days | the maximum distance a shift may travel, counted in *calendar* days. **Beyond it, that occurrence produces no run at all** — matching the classical model, this is not an error. The window also bounds how far a rule may reach, so a wider grace window costs more work in `matches()`. **`grace_days=0` means "use the default", not "zero tolerance"** — omit it unless you need a tighter window |
 
 `simple_rule()` is the compact spelling of the same model. `relative n` counts `n`

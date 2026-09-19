@@ -5,6 +5,31 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-20
+
+### Changed
+
+- **Breaking.** An unimplemented 処理サイクル now raises `NotImplementedError`
+  instead of being silently ignored. `Frequency.WEEKLY` and `Frequency.YEARLY`
+  are part of the vocabulary but no resolution logic consults them, so a rule
+  carrying one repeated **monthly** -- a schedule that looked plausible and ran
+  on the wrong days. `simple_rule(period="weekly")` is affected. Only
+  `Frequency.DAILY` and `Frequency.MONTHLY` are implemented.
+- **Breaking.** An exchange calendar query that fails now raises
+  `ExchangeCalendarError` instead of being treated as "not a holiday".
+  Returning `False` there meant an unanswerable query became a *working* day, so
+  a scheduled run could land on a day the calendar could not vouch for. Both
+  this and `UnknownCalendarError` are exported from the package root.
+
+### Fixed
+
+- `CalendarTimetable.minute` is stored rather than recovered by splitting the
+  parent's private `_expression` string, so reading it no longer depends on an
+  Airflow internal.
+- `minute` and `base_day` are validated before `super().__init__`, so an invalid
+  value raises `ValueError` with a clear message rather than whatever `croniter`
+  makes of the expression.
+
 ## [0.2.1] - 2026-09-20
 
 ### Fixed

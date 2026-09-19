@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from .calendars import (
     NO_CALENDAR,
+    ExchangeCalendarError,
     UnknownCalendarError,
     WorkingDayCalendar,
     available_country_calendars,
@@ -83,12 +84,13 @@ from .rules import (
 # documented entry point, and Airflow itself resolves it by that path.
 from .timetable import DEFAULT_TIMEZONE, CalendarTimetable
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "__version__",
     # calendars -- Airflow-free
     "NO_CALENDAR",
+    "ExchangeCalendarError",
     "UnknownCalendarError",
     "WorkingDayCalendar",
     "available_country_calendars",

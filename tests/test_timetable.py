@@ -327,3 +327,26 @@ class TestNoDayOfWeekFilterInCron:
             seen.append(tt._business_date(moment))
         assert len(seen) == len(set(seen))
         assert all(tt.is_working_day(d) for d in seen)
+
+
+class TestMinuteIsStoredNotParsed:
+    """``minute`` must not be recovered from the parent's cron expression."""
+
+    @pytest.mark.parametrize("minute", [0, 1, 30, 59])
+    def test_minute_round_trips(self, minute):
+        assert CalendarTimetable(calendar_id="JP", minute=minute).minute == minute
+
+    @pytest.mark.parametrize("minute", [0, 30, 59])
+    def test_minute_survives_serialization(self, minute):
+        tt = CalendarTimetable(calendar_id="JP", minute=minute)
+        assert CalendarTimetable.deserialize(tt.serialize()).minute == minute
+
+    def test_an_invalid_minute_raises_before_the_parent_is_built(self):
+        # The value is validated before super().__init__, so the error is this
+        # class's own and not whatever croniter makes of the expression.
+        with pytest.raises(ValueError, match="minute must be between 0 and 59"):
+            CalendarTimetable(calendar_id="JP", minute=60)
+
+    def test_an_invalid_base_day_raises_before_the_parent_is_built(self):
+        with pytest.raises(ValueError, match="base_day must be between 1 and 31"):
+            CalendarTimetable(calendar_id="JP", base_day=32)

@@ -124,12 +124,40 @@ class Count(str, Enum):
 
 
 class Frequency(str, Enum):
-    """処理サイクル -- the repeat period."""
+    """処理サイクル -- the repeat period.
+
+    Only :attr:`DAILY` and :attr:`MONTHLY` change the schedule. ``WEEKLY`` and
+    ``YEARLY`` are part of the vocabulary and are accepted by the constructor,
+    but no resolution logic consults them, so a rule carrying one would repeat
+    monthly -- silently wrong rather than obviously wrong. They are therefore
+    rejected when a rule is built. See :func:`_reject_unsupported_frequency`.
+    """
 
     DAILY = "daily"  # 1日毎
     WEEKLY = "weekly"  # 1週毎
     MONTHLY = "monthly"  # 1月毎
     YEARLY = "yearly"  # 1年毎
+
+
+#: 処理サイクル values this engine implements. The rest of the vocabulary is
+#: accepted by the enum but cannot be resolved, so it must not reach a rule.
+_SUPPORTED_FREQUENCIES = frozenset({Frequency.DAILY, Frequency.MONTHLY})
+
+
+def _reject_unsupported_frequency(frequency: Frequency) -> Frequency:
+    """Fail loudly on a 処理サイクル the engine cannot honour.
+
+    ``resolve()``/``matches()`` answer for a month-shaped period, so an
+    unimplemented ``frequency`` would quietly repeat monthly. Raising at
+    construction keeps the mistake at the call site (DAG-parse time) instead of
+    turning it into a schedule that looks plausible and runs on the wrong days.
+    """
+    if frequency not in _SUPPORTED_FREQUENCIES:
+        supported = ", ".join(sorted(f.value for f in _SUPPORTED_FREQUENCIES))
+        raise NotImplementedError(
+            f"frequency={frequency.value!r} is not implemented; supported: {supported}"
+        )
+    return frequency
 
 
 class Weekday(str, Enum):
@@ -384,6 +412,9 @@ class ScheduleRule:
                 object.__setattr__(self, name, enum(value))
         if self.weekday is not None and not isinstance(self.weekday, Weekday):
             object.__setattr__(self, "weekday", Weekday(self.weekday))
+        # After the coercion, so a raw "weekly" string is caught too. A 処理サイクル
+        # nothing consults would repeat monthly, so it must not reach resolution.
+        _reject_unsupported_frequency(self.frequency)
 
     # ---------------------------------------------------------------- resolve
 

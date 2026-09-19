@@ -43,6 +43,16 @@ class UnknownCalendarError(LookupError):
     """Raised when a calendar id is in neither registry."""
 
 
+class ExchangeCalendarError(RuntimeError):
+    """Raised when an exchange calendar cannot answer a date query.
+
+    Distinct from :class:`UnknownCalendarError`, which means the code itself is
+    not registered. This one means the code resolved but the query failed, and
+    it exists so the failure cannot be confused with "not a holiday" -- which
+    would schedule a run on a day the calendar could not vouch for.
+    """
+
+
 @runtime_checkable
 class WorkingDayCalendar(Protocol):
     """Minimal calendar interface the rule engine needs.
@@ -146,9 +156,12 @@ def _is_holiday_exchange(calendar_id: str, day: date) -> bool:
         return False
     try:
         valid_days = schedule.valid_days(start_date=day, end_date=day)
-    except Exception:  # pragma: no cover - defensive: bad range / bad code
-        log.warning("exchange calendar %r could not evaluate %s", calendar_id, day)
-        return False
+    except Exception as exc:
+        # Returning False here would mean "not a holiday", i.e. a working day.
+        # A query that cannot be answered must not silently become a run.
+        raise ExchangeCalendarError(
+            f"exchange calendar {calendar_id!r} could not evaluate {day}: {exc}"
+        ) from exc
     return len(valid_days) == 0
 
 
@@ -232,6 +245,7 @@ def available_exchange_calendars() -> list[str]:
 
 __all__ = [
     "NO_CALENDAR",
+    "ExchangeCalendarError",
     "UnknownCalendarError",
     "WorkingDayCalendar",
     "available_country_calendars",

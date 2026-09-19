@@ -176,7 +176,15 @@ class CalendarTimetable(CronTriggerTimetable):
                 f"hour must be between -{_MAX_HOUR_OFFSET} and {_MAX_HOUR_OFFSET} "
                 f"(the 48-hour clock), got {hour!r}"
             )
+        # Validated before ``super().__init__`` so a bad value raises this
+        # class's error rather than whatever croniter makes of it.
+        if not 0 <= minute <= 59:
+            raise ValueError(f"minute must be between 0 and 59, got {minute!r}")
+        if not 1 <= base_day <= 31:
+            raise ValueError(f"base_day must be between 1 and 31, got {base_day!r}")
+
         self._hour = hour
+        self._minute = minute
         self._day_offset, hour_of_day = _split_hour(hour)
         self._hour_of_day = hour_of_day
 
@@ -196,10 +204,6 @@ class CalendarTimetable(CronTriggerTimetable):
         # Validates the id now, so a typo fails at DAG-parse time with a clear
         # message instead of silently scheduling on holidays.
         self._calendar_kind, self._calendar_code, self._checker = resolve_calendar(calendar_id)
-        if not 0 <= minute <= 59:
-            raise ValueError(f"minute must be between 0 and 59, got {minute!r}")
-        if not 1 <= base_day <= 31:
-            raise ValueError(f"base_day must be between 1 and 31, got {base_day!r}")
 
         self.exclude_dates = frozenset(_parse_date(d) for d in (exclude_dates or ()))
         self.include_dates = frozenset(_parse_date(d) for d in (include_dates or ()))
@@ -222,7 +226,13 @@ class CalendarTimetable(CronTriggerTimetable):
 
     @property
     def minute(self) -> int:
-        return int(self._expression.split()[0])
+        """The declared minute.
+
+        Stored rather than recovered from ``self._expression``: that attribute
+        belongs to the parent class, so parsing it would make an Airflow
+        internal detail part of this class's public contract.
+        """
+        return self._minute
 
     @property
     def tz(self):

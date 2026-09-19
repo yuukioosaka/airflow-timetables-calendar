@@ -36,6 +36,7 @@ from airflow_timetables_calendar import (
     nth_business_day_from_end,
     period_for,
     resolve_rules,
+    simple_rule,
 )
 from conftest import SEPTEMBER_CLOSED, SyntheticCalendar
 
@@ -990,3 +991,37 @@ class TestRelativeDayCountsFromTheBaseDate:
                     break
             assert rule_obj.matches(day, calendar, base_day) == produced, day
             day += timedelta(days=1)
+
+
+class TestUnsupportedFrequency:
+    """A 処理サイクル nothing consults must not silently become monthly.
+
+    ``WEEKLY`` / ``YEARLY`` are part of the vocabulary but no resolution logic
+    reads them, so accepting one would produce a plausible-looking schedule that
+    actually repeats monthly. Rejected at construction, i.e. at DAG-parse time.
+    """
+
+    @pytest.mark.parametrize("frequency", [Frequency.WEEKLY, Frequency.YEARLY])
+    def test_unsupported_frequencies_are_rejected(self, frequency):
+        with pytest.raises(NotImplementedError, match="is not implemented"):
+            rule(frequency=frequency)
+
+    @pytest.mark.parametrize("frequency", ["weekly", "yearly"])
+    def test_unsupported_frequencies_are_rejected_as_raw_strings(self, frequency):
+        # They arrive as strings from the DAG serializer.
+        with pytest.raises(NotImplementedError):
+            rule(frequency=frequency)
+
+    @pytest.mark.parametrize("frequency", [Frequency.DAILY, Frequency.MONTHLY])
+    def test_supported_frequencies_are_accepted(self, frequency):
+        assert rule(frequency=frequency).frequency is frequency
+
+    def test_simple_rule_rejects_an_unsupported_period(self):
+        with pytest.raises(NotImplementedError):
+            ScheduleRule(**simple_rule(day=15, period="weekly"))
+
+    def test_the_message_names_the_supported_values(self):
+        with pytest.raises(NotImplementedError) as err:
+            rule(frequency=Frequency.WEEKLY)
+        assert "daily" in str(err.value)
+        assert "monthly" in str(err.value)
