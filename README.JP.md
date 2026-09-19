@@ -128,6 +128,8 @@ CalendarTimetable(
 | `last_business_day_of_month` | `当月末営業日` | その月の最終営業日（月末営業日） |
 | `last_business_day_of_previous_month` | `前月末営業日` | **前月**の最終営業日 |
 | `business_day_before_month_end` | `月末前営業日` | 月末の前営業日 |
+| `next_business_day` | `翌営業日` | 1日の翌営業日（＝1日が営業日なら1日自身） |
+| `previous_business_day` | `前営業日` | 1日の前営業日（＝前月末営業日） |
 | `every_business_day` | `毎営業日` | すべての営業日 |
 
 ```python

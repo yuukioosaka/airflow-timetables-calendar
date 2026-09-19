@@ -182,22 +182,13 @@ the round above because the only `month_offset` coverage was `-1` with
   table offered two names for one rule with nothing to choose between them. The
   surviving spellings are the ones that say which month they refer to, which is
   the axis `前月末営業日` and `当月末営業日` actually differ on. `BUSINESS_DAY_RULES`
-  is now five presets and `PRESET_ALIASES` five aliases, still in 1:1
+  is now seven presets and `PRESET_ALIASES` seven aliases, still in 1:1
   correspondence.
-- The `翌営業日` / `next_business_day` and `前営業日` / `previous_business_day`
-  presets are gone, in both spellings. Both were ambiguous in a way the rest of
-  the vocabulary is not: with the default anchor (the 1st of the month) they
-  silently meant "the working day before/after the 1st", which is the *previous
-  month's* last working day and the 1st itself -- not "the next/previous working
-  day from today" as the name reads. 月末前営業日 names the month-end case
-  explicitly, and 起算 (`offset` with `count=Count.OPERATING`) covers the general
-  `n営業日前/後` case, so no expressive power is lost.
 
 ### Added
 - **Every preset now has an English name as well as its Japanese one.** The
   Japanese spellings stay canonical -- they are what the source definitions are
-  written in -- but `every_business_day`, `last_business_day_of_month` and the
-  other three
+  written in -- but `next_business_day`, `every_business_day` and the other five
   are accepted anywhere a preset name is accepted, and build an identical
   `ScheduleRule`. `PRESET_ALIASES` holds the English names and `PRESET_LOOKUP`
   maps every accepted spelling to its canonical key, so a UI can offer both. An
