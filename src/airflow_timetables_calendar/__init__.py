@@ -62,6 +62,19 @@ from .rules import (
     period_for,
     resolve_rules,
 )
+
+# NOTE: importing this package imports Airflow, because the timetable layer is
+# re-exported above. The Airflow-free modules can still be reused by another
+# scheduler -- but import them through their own path, and only if Airflow is
+# installed anyway:
+#
+#     from airflow_timetables_calendar.rules import nth_business_day
+#
+# What is guaranteed is that `calendars.py` and `rules.py` contain no Airflow
+# imports at all, which is checked by parsing their ASTs in CI and in
+# tests/test_calendars.py. Keeping the timetable out of this module is not an
+# option: `from airflow_timetables_calendar import CalendarTimetable` is the
+# documented entry point, and Airflow itself resolves it by that path.
 from .timetable import DEFAULT_TIMEZONE, CalendarTimetable
 
 __version__ = "0.1.0"

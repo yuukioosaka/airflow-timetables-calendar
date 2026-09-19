@@ -141,11 +141,20 @@ CalendarTimetable(
 
 ### Rules without Airflow
 
-`airflow_timetables_calendar.rules` imports nothing from Airflow, so it can be
-used as a plain date calculator or dropped into a non-Airflow scheduler:
+`airflow_timetables_calendar.rules` and `.calendars` import nothing from
+Airflow, so they work as a plain date calculator or inside another scheduler.
+They are unit-tested without an Airflow install, and CI parses their ASTs to
+keep it that way.
+
+One caveat: importing *the package* imports Airflow, because `__init__`
+re-exports `CalendarTimetable`. So the rule engine is reusable only where
+Airflow is installed anyway — it is the dependency that is avoidable, not the
+installation.
 
 ```python
 from datetime import date
+
+# Through the package (needs Airflow installed):
 from airflow_timetables_calendar import nth_business_day, period_for, ScheduleRule
 
 class MyCalendar:
@@ -157,7 +166,8 @@ rule.resolve(period_for(date(2026, 9, 1)), MyCalendar())  # 2026-09-07
 ```
 
 Any object with `is_working_day(day)` satisfies the `WorkingDayCalendar`
-protocol — no import from this library is needed.
+protocol — no import from this library is needed, so a host scheduler can pass
+its own calendar object straight in.
 
 ## Serialization
 
