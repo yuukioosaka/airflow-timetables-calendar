@@ -1,4 +1,4 @@
-"""Tests for the JP1/AJS3 rule engine.
+"""Tests for the business-day rule engine.
 
 The whole-year sweep at the bottom is the highest-value test here: it is what
 actually caught two off-by-one bugs during development (``_apply_offset`` counting
@@ -228,9 +228,20 @@ class TestGraceDays:
 
 
 class TestScope:
-    """``Scope.PERIOD`` rejects a result that leaves the anchor month."""
+    """``Scope.PERIOD`` is 開始年月: it binds the rule to the month it names.
 
-    def test_substitution_leaving_the_period_is_rejected(self):
+    It constrains the **anchor**, and it rejects a movement that walks *back*
+    past the anchor month. It does not reject a movement that carries the date
+    forward out of the period, because that is exactly what 振り替え and a
+    forward 起算 are for -- and with ``base_day != 1`` the forward direction
+    routinely lands in the next calendar month. An earlier version tested the
+    *period* instead of the month at both stages, which silently turned valid
+    schedules into "no run".
+    """
+
+    def test_a_substitution_carries_the_date_out_of_the_period(self):
+        # 09-30 is closed, so 次の運用日に振り替え lands on 10-01. 開始年月 named
+        # September and the anchor was in September; only the 振り替え moved.
         closed = SyntheticCalendar(SEPTEMBER_CLOSED | {date(2026, 9, 30)})
         got = rule(
             kind=Kind.ABSOLUTE,
@@ -239,7 +250,7 @@ class TestScope:
             grace_days=10,
             scope=Scope.PERIOD,
         ).resolve(period_for(date(2026, 9, 1)), closed)
-        assert got is None
+        assert got == date(2026, 10, 1)
 
     def test_an_in_period_result_is_kept(self, calendar):
         got = rule(kind=Kind.ABSOLUTE, day=15, scope=Scope.PERIOD).resolve(
@@ -247,7 +258,9 @@ class TestScope:
         )
         assert got == date(2026, 9, 15)
 
-    def test_an_offset_leaving_the_period_is_rejected(self, calendar):
+    def test_a_forward_offset_may_leave_the_period(self, calendar):
+        # 起算スケジュール is a movement, so 60日後 means 60 days later. There is no
+        # month-end-safe reading of it that would keep the answer in September.
         got = rule(
             kind=Kind.ABSOLUTE,
             day=15,
@@ -255,7 +268,29 @@ class TestScope:
             count=Count.CALENDAR,
             scope=Scope.PERIOD,
         ).resolve(period_for(date(2026, 9, 1)), calendar)
+        assert got == date(2026, 11, 14)
+
+    def test_a_backward_offset_out_of_the_anchor_month_is_rejected(self, calendar):
+        # The mirror image *is* rejected: 開始年月 will not have a rule resolve to
+        # a date before the month it names.
+        got = rule(
+            kind=Kind.ABSOLUTE,
+            day=1,
+            offset=-3,
+            count=Count.CALENDAR,
+            offset_grace_days=30,
+            scope=Scope.PERIOD,
+        ).resolve(period_for(date(2026, 9, 1)), calendar)
         assert got is None
+
+    def test_an_anchor_outside_the_anchor_month_is_rejected(self, open_calendar):
+        # day=45 clamps to September's last day, so the anchor is in-period --
+        # but a rule whose anchor month cannot match the period is rejected.
+        # 第3営業日 of the anchor month is a real day of that month, so it is kept.
+        got = rule(kind=Kind.OPERATING, day=3, scope=Scope.PERIOD).resolve(
+            period_for(date(2026, 9, 1)), open_calendar
+        )
+        assert got == date(2026, 9, 3)
 
 
 # --------------------------------------------------------------------------- #
@@ -444,22 +479,24 @@ class TestBaseDayIntegration:
         # 2026-08-26 is a Wednesday, so it is both the period start and the first
         # working day of the anchor month that is >= the period start.
         got = rule(**nth_business_day(1)).resolve(period, open_calendar)
-        assert got == date(2026, 8, 3)  # counting from the 1st of August, per JP1
+        assert got == date(2026, 8, 3)  # counting from the 1st of August
 
     def test_month_offset_moves_a_whole_period(self, period, open_calendar):
         # 前月末営業日 = the previous *period's* month-end, i.e. July's.
         got = rule(**BUSINESS_DAY_RULES["前月末営業日"]).resolve(period, open_calendar)
         assert got == date(2026, 7, 31)
 
-    def test_scope_period_keeps_the_result_inside(self, period, open_calendar):
-        # 第3営業日 of August (Mon the 3rd) is before the period opens, so scoping
-        # rejects it -- a useful guard when mixing 基準日 with 開始日.
-        # nth_business_day() already supplies a scope, so override it rather
-        # than passing it twice.
+    def test_scope_period_binds_to_the_anchor_month(self, period, open_calendar):
+        # 第3営業日 refers to the month 基準日 is in -- August, the anchor month --
+        # so it resolves to the 3rd working day of *August*, even though that is
+        # before the period opens on 08-26. 開始年月 names the month the rule
+        # anchors in, and the anchor is legitimately in it.
+        # nth_business_day() already supplies a scope, so override the value
+        # rather than passing it twice.
         got = replace(ScheduleRule(**nth_business_day(3)), scope=Scope.PERIOD).resolve(
             period, open_calendar
         )
-        assert got is None
+        assert got == date(2026, 8, 5)
 
 
 # --------------------------------------------------------------------------- #
@@ -560,7 +597,7 @@ class TestResolveRules:
 
     def test_first_match_in_list_order_is_returned(self, calendar):
         # `resolve_rules` scans in list order and returns the first rule that
-        # yields the day. JobCenter gives *lower* rules higher precedence, so
+        # yields the day. simple_rule gives *lower* rules higher precedence, so
         # callers list 除外 rules last and the first match is the one that wins.
         daily = rule(**BUSINESS_DAY_RULES["毎営業日"])
         explicit = rule(kind=Kind.ABSOLUTE, day=15)

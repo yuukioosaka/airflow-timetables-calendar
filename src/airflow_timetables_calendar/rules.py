@@ -1,16 +1,18 @@
-"""JP1/AJS3- and WebSAM JobCenter-style business-day schedule rules.
+"""Business-day schedule rules, in the style of classical Japanese job
+schedulers.
 
 Japanese enterprise job schedulers do not express schedules as plain cron
 expressions. A schedule is an **anchor date** plus a chain of **modifiers**, and
 the exact vocabulary is surprisingly consistent across vendors. This module
 implements that model on top of a calendar (see :mod:`.calendars`).
 
-Terminology was taken from Hitachi's JP1/AJS3 manuals and NEC's WebSAM
-JobCenter documentation; see ``docs`` at the bottom of this file for sources.
+The Japanese terms are kept because they are the vocabulary this class of
+scheduling is normally discussed in, and no vendor's documentation is
+reproduced.
 
-The JP1 model
--------------
-JP1/AJS3 derives an execution date from three things (種別 / 開始年月 / 開始日):
+The classical model
+-------------------
+The classical model derives an execution date from three things (種別 / 開始年月 / 開始日):
 
 * **基準日 (base date)** -- a calendar defines where a "month" starts, e.g. base
   date 26 means Aug 26..Sep 25 is treated as "August".
@@ -32,7 +34,7 @@ JP1/AJS3 derives an execution date from three things (種別 / 開始年月 / �
   (月末指定 "N days before month end") or ``WEEKDAY`` (曜日指定 "the Nth
   <weekday>").
 
-Once a date is computed, two further JP1 stages may move it:
+Once a date is computed, two further stages may move it:
 
 * **休業日の振り替え (holiday substitution)** -- if the computed day is not a
   working day, either do not run, run anyway, or shift to the nearest working day
@@ -51,17 +53,17 @@ Two bounds are important:
   legitimately land in a neighbouring month. Month scoping is therefore opt-in
   via ``scope_to_period=True``.
 
-The JobCenter model
+The compact notation
 -------------------
-NEC's JobCenter expresses much the same thing more compactly::
+The compact notation expresses much the same thing in one line::
 
     +登録、毎月（日付）、1日、休止日 後シフト、相対 4、開始時刻 18:00
 
 which reads "monthly on day 1, shift later if closed, then move 4 more days"
-(equals 月初から5営業日目). JobCenter's ``相対 n`` counts the anchor itself as
-working day 1, so ``相対 4`` is the 5th working day.
+(equals 月初から5営業日目). The compact notation's ``相対 n`` counts the anchor
+itself as working day 1, so ``相対 4`` is the 5th working day.
 
-:func:`jobcenter` and :func:`jp1` build these rules with Japanese-facing
+:func:`simple_rule` and :func:`verbose_rule` build these rules with Japanese-facing
 arguments, and
 :class:`~airflow_timetables_calendar.timetable.CalendarTimetable` accepts a list
 of rules directly.
@@ -85,7 +87,7 @@ from .calendars import WorkingDayCalendar
 
 
 class Kind(str, Enum):
-    """JP1 種別 -- what the day offset counts."""
+    """種別 -- what the day offset counts."""
 
     REGISTERED = "registered"  # 登録日
     ABSOLUTE = "absolute"  # 絶対日
@@ -95,7 +97,7 @@ class Kind(str, Enum):
 
 
 class StartDay(str, Enum):
-    """JP1 開始日 -- how the start day within the period is named."""
+    """開始日 -- how the start day within the period is named."""
 
     DAY = "day"  # 日付指定
     MONTH_END = "month_end"  # 月末指定
@@ -103,7 +105,7 @@ class StartDay(str, Enum):
 
 
 class Substitution(str, Enum):
-    """JP1 休業日の振り替え -- what to do when the day is not a working day."""
+    """休業日の振り替え -- what to do when the day is not a working day."""
 
     SKIP = "skip"  # 実行しない
     PREVIOUS = "previous"  # 前の運用日に振り替え (前倒し)
@@ -112,14 +114,14 @@ class Substitution(str, Enum):
 
 
 class Count(str, Enum):
-    """JP1 起算スケジュール -- what the offset counts."""
+    """起算スケジュール -- what the offset counts."""
 
     OPERATING = "operating"  # n運用日前 / n運用日後
     CALENDAR = "calendar"  # n日前 / n日後 (ignores working days)
 
 
 class Frequency(str, Enum):
-    """JP1 処理サイクル -- the repeat period."""
+    """処理サイクル -- the repeat period."""
 
     DAILY = "daily"  # 1日毎
     WEEKLY = "weekly"  # 1週毎
@@ -145,7 +147,7 @@ class Weekday(str, Enum):
 class Scope(str, Enum):
     """How far a rule is allowed to move the date."""
 
-    #: Result must stay inside the anchor's period (JP1's 開始年月 semantics).
+    #: Result must stay inside the anchor's period (開始年月 semantics).
     PERIOD = "period"
     #: Any date is acceptable as long as the grace window allows it.
     FREE = "free"
@@ -168,7 +170,7 @@ class Scope(str, Enum):
 
 @dataclass(frozen=True)
 class Period:
-    """One JP1 "month", honouring 基準日 (base date).
+    """One scheduler "month", honouring 基準日 (base date).
 
     ``month`` is the 1-based month the period's anchor falls in. With
     ``base_day=26`` the period labelled *August* covers 2026-08-26..2026-09-25,
@@ -281,33 +283,33 @@ def period_for(day: date, base_day: int = 1) -> Period:
 
 @dataclass(frozen=True)
 class ScheduleRule:
-    """One JP1/AJS3- or JobCenter-style schedule rule.
+    """One classical-style schedule rule.
 
     A rule is only evaluated for the :class:`Period` it falls in, so
     :meth:`resolve` is always anchored to "the occurrence in this month" rather
     than producing an unbounded series.
 
-    :param kind: What the day offset counts (JP1 種別).
-    :param start_day: How the day is named (JP1 開始日).
+    :param kind: What the day offset counts (種別).
+    :param start_day: How the day is named (開始日).
     :param day: The N in "day N" / "the Nth weekday". For
         :attr:`StartDay.MONTH_END` it counts **back from** month end and is
         inclusive: ``day=0`` is the last day of the month, ``day=1`` the day
         before it, ``day=2`` the day before that. Note that this differs from
-        :func:`JobCenter's <jobcenter>` ``L`` notation, where ``相対`` counts the
+        :func:`simple_rule`'s ``L`` notation, where ``相対`` counts the
         anchor as working day 1.
     :param weekday: Required when ``start_day`` is :attr:`StartDay.WEEKDAY`.
     :param month_offset: Shift the whole anchor by N periods first.
-    :param substitution: Holiday policy (JP1 休業日の振り替え).
+    :param substitution: Holiday policy (休業日の振り替え).
     :param grace_days: Max distance the substitution may travel.
-    :param offset: Final adjustment (JP1 起算スケジュール), signed.
+    :param offset: Final adjustment (起算スケジュール), signed.
     :param count: What ``offset`` counts.
     :param offset_grace_days: Max distance the offset may travel.
     :param shift_direction: Direction the 休止日 shift travels when the offset
         stage is the one that carries a closed anchor onto a working day.
-    :param scope: Whether the result must remain inside the anchor period.
-    :param frequency: Repeat period (JP1 処理サイクル).
+    :param scope: 開始年月 -- whether the rule is bound to the anchor month.
+    :param frequency: Repeat period (処理サイクル).
     :param include_start: Whether ``start_date`` itself may produce a run.
-    :param virtual: If set, this rule only suppresses others (JobCenter ``除外``).
+    :param virtual: If set, this rule only suppresses others (``除外``).
     """
 
     kind: Kind = Kind.OPERATING
@@ -324,7 +326,7 @@ class ScheduleRule:
     offset_grace_days: int = 0
     #: Direction of the 休止日 shift when it is the *offset* stage that carries
     #: the date out of a closed anchor: ``+1`` 後シフト, ``-1`` 前シフト, ``0``
-    #: unset. `jobcenter()` sets this so a closed anchor settles the way its own
+    #: unset. `simple_rule()` sets this so a closed anchor settles the way its own
     #: 休止日 rule says even though the substitution itself is a no-op there.
     shift_direction: int = 0
 
@@ -362,7 +364,7 @@ class ScheduleRule:
     def resolve(self, period: Period, cal: WorkingDayCalendar) -> date | None:
         """The execution date this rule produces in ``period``, or None.
 
-        ``None`` means "no run this period", which is a normal JP1 outcome (the
+        ``None`` means "no run this period", which is a normal outcome (the
         grace windows ran out, or the day is closed and the policy is to skip).
 
         ``month_offset`` moves whole *periods*, not whole calendar months. With the
@@ -396,11 +398,22 @@ class ScheduleRule:
         ):
             return None
 
+        # 開始年月 as it is usually written constrains the date the rule *names*.
+        # Asking it of the anchor, rather than of the final result, is what makes
+        # `simple_rule(day="L", shift="prev", relative=1)` mean "the first working
+        # day after month end" -- previously the result was rejected for landing
+        # outside the period, and the schedule silently never fired at all.
+        #
+        # `month_bound` is kept for the one constraint that does still apply after
+        # the move: a date that walks back past the anchor month is rejected.
+        month_bound: tuple[int, int] | None = None
+        if self.scope is Scope.PERIOD:
+            month_bound = (anchor.year, anchor.month)
+            if self.kind is not Kind.REGISTERED and ((period.year, period.month) != month_bound):
+                return None
+
         day = self._anchor_day(anchor, cal)
         if day is None:
-            return None
-
-        if self.scope is Scope.PERIOD and not period.contains(day):
             return None
 
         day = self._substitute(day, cal)
@@ -412,10 +425,12 @@ class ScheduleRule:
             if day is None:
                 return None
 
-        # Checked last, so that the *final* date is what has to stay inside the
-        # period. JP1's 開始年月 is a constraint on the generated date, so a
-        # substitution (振り替え) that crosses the boundary is rejected too.
-        if self.scope is Scope.PERIOD and not period.contains(day):
+        # 振り替え and 起算 are movements, so the moved date may leave the period --
+        # 基準日 26 deliberately places the 25th's run on the 26th of the next
+        # month, and 前月末営業日 resolves to the previous period outright. But
+        # 開始年月 does reject a date that walks *back* past the month it names, so
+        # `simple_rule(day=1, shift="next", relative=-3)` still produces no run.
+        if month_bound is not None and (day.year, day.month) < month_bound:
             return None
 
         return day
@@ -537,7 +552,7 @@ class ScheduleRule:
         if self.substitution is Substitution.SKIP:
             return None
         if self.substitution is Substitution.RUN_ANYWAY:
-            # JP1 keeps the date but can end up "繰り越し未実行"; here the run
+            # The rule keeps the date but can end up "繰り越し未実行"; here the run
             # simply happens on the closed day.
             return day
 
@@ -565,8 +580,8 @@ class ScheduleRule:
 
         # A closed anchor has still to be carried onto a working day before the
         # count proper begins, and that carry is the 休止日 shift rather than one
-        # of the `n` steps -- so it must not spend one. Without this, JobCenter's
-        # "shift the anchor, then count from it" composition overshoots by a day
+        # of the `n` steps -- so it must not spend one. Without this, the compact
+        # notation's "shift the anchor, then count from it" composition overshoots by a day
         # whenever the anchor lands on a closed day, and -- because the
         # substitution and the offset would then both walk -- by one step per
         # closed day in between.
@@ -594,7 +609,7 @@ class ScheduleRule:
                 remaining -= 1
                 if remaining == 0:
                     return candidate
-        # 起算猶予日数 exceeded: JP1 generates no schedule at all for this
+        # 起算猶予日数 exceeded: no schedule is generated at all for this
         # occurrence rather than erroring, and we match that.
         return None
 
@@ -610,10 +625,19 @@ class ScheduleRule:
         every working day is a run. Without this check "毎営業日" would only match the
         month's first working day -- its anchor -- and mean "毎月1営業日".
 
-        Note that a MONTHLY rule still matches a day in a month it is not anchored
-        to, as long as its own resolution lands on that day: 前月末営業日 resolves to
-        the previous month's month-end, and that day is its run in the current
-        period. That has always been the behaviour, so it is left alone.
+        A MONTHLY rule matches a day in a month it is not anchored to, as long as
+        some neighbouring period's own resolution lands on that day. Both
+        directions occur:
+
+        * 前月末営業日 resolves, for period N, to a day in period N-1, so the day is
+          the run of the period *after* the one containing it.
+        * A forward 相対 that crosses the month end (`day="L", relative=1`)
+          resolves, for period N, to a day in period N+1, so the day is the run of
+          the period *before* the one containing it.
+
+        Hence both neighbours are consulted. They cannot produce a false positive:
+        periods are defined by their anchors and consecutive periods do not
+        overlap, so at most one period's ``resolve()`` can equal any given day.
         """
         period = period_for(day, base_day)
         if self.frequency is Frequency.DAILY:
@@ -621,43 +645,32 @@ class ScheduleRule:
             # 毎営業日 means every *business* day.
             return cal.is_working_day(day)
 
-        if self.resolve(period, cal) == day:
-            return True
-
-        # A rule may deliberately place its run *outside* the period it belongs
-        # to -- 前月末営業日 resolves, for period N, to a day in period N-1. Asking
-        # only "which period contains `day`" therefore misses it: the run belongs
-        # to the *following* period, and no period's own resolve() ever returns
-        # the day when the day is queried directly.
-        #
-        # Checking the next period closes that gap. It cannot create false
-        # positives, because a period is defined by its anchor and consecutive
-        # periods do not overlap, so at most one period's resolve() can equal any
-        # given day. (A rule reaching *forwards* would need the previous period
-        # too; none of the presets do, and the backward reach is the documented
-        # 前月末 behaviour.)
-        return self.resolve(period.next(), cal) == day
+        return (
+            self.resolve(period, cal) == day
+            or self.resolve(period.prev(), cal) == day
+            or self.resolve(period.next(), cal) == day
+        )
 
 
 # Bound the substitution / offset walks so a misconfigured rule cannot wander
 # forever. Unlike `ScheduleRule.day`, these distance windows *are* part of the
-# JP1 model (振り替え猶予日数 / 起算猶予日数): running out of window means "no run",
+# classical model (振り替え猶予日数 / 起算猶予日数): running out of window means "no run",
 # silently, rather than an error -- so an unbounded search would be wrong here,
 # and `grace_days=0` means "use this default" rather than "zero tolerance".
 _DEFAULT_GRACE = 366
 
-# JobCenter has no documented grace-day concept of its own. This window is wide
+# The compact notation has no grace-day concept of its own. This window is wide
 # enough to cross any realistic holiday block (year-end/New Year runs to ~6 days)
 # without becoming an implicit unbounded search.
-_JOB_CENTER_GRACE = 60
+_COMPACT_GRACE = 60
 
 
 # --------------------------------------------------------------------------- #
-# JobCenter-flavoured constructors
+# Compact-notation constructors
 # --------------------------------------------------------------------------- #
 
 
-def jobcenter(
+def simple_rule(
     *,
     period: str = "monthly",
     day: int | str = 1,
@@ -665,21 +678,22 @@ def jobcenter(
     shift: str | None = None,
     relative: int = 0,
 ) -> dict:
-    """Build rule kwargs using WebSAM JobCenter vocabulary.
+    """Build rule kwargs using the compact notation.
 
     Mirrors ``+登録、<period>、<day>、休止日 <shift>、相対 <relative>``.
 
-    ``day`` is a **calendar day of the month**, which is what 毎月（日付） means in
-    NEC's rule text: their worked example is ``＋登録、毎月（日付）、1日、休止日 後
-    シフト、相対 4`` and the documented outcome is 月初から5営業日目. "Day 1" is
-    therefore the 1st, not the month's 1st working day -- the *working*-day
-    families are 第n営業日, built by :func:`nth_business_day` instead. Anything
-    else makes ``day=30`` mean "the 30th working day of the month", which lands in
-    the *following* month and explains three of this module's historical bugs.
+    ``day`` is a **calendar day of the month**, which is what 毎月（日付）
+    (monthly *by date*) means. The notation's rule text is ``＋登録、毎月（日付）、
+    1日、休止日 後シフト、相対 4`` and its documented outcome is 月初から5営業日目.
+    "Day 1" is therefore the 1st, not the month's 1st working day -- the
+    *working*-day families are 第n営業日, built by :func:`nth_business_day`
+    instead. Anything else makes ``day=30`` mean "the 30th working day of the
+    month", which lands in the *following* month and explains three of this
+    module's historical bugs.
 
     ``relative`` counts *further* working days from the anchor once the anchor
     has settled, so ``相対 0`` is the anchor itself and ``相対 4`` on 1日 is the
-    5th working day. NEC's second example (``L日``, 前シフト, ``相対 -2`` -> three
+    5th working day. The second worked example (``L日``, 前シフト, ``相対 -2`` -> three
     working days before month end) confirms the anchor is not itself counted as
     one of the ``relative`` steps.
 
@@ -748,14 +762,14 @@ def jobcenter(
 
     if relative:
         kwargs["count"] = Count.OPERATING
-        kwargs["offset_grace_days"] = _JOB_CENTER_GRACE
+        kwargs["offset_grace_days"] = _COMPACT_GRACE
         # Only ONE stage may walk: the substitution must never move the date, so
         # that the offset's walk is the only thing that steps. (Chaining the two
         # makes every closed day in the span cost two steps.)
         kwargs["substitution"] = Substitution.RUN_ANYWAY
-        # 相対 keeps its own sign; the 休止日 shift does not redirect it. NEC's
-        # rule text is "休止日 後シフト、相対 4" -- the shift settles the anchor and
-        # 相対 then counts from that settled day, in 相対's direction. Letting a
+        # 相対 keeps its own sign; the 休止日 shift does not redirect it. The
+        # rule text "休止日 後シフト、相対 4" reads as: the shift settles the
+        # anchor, then 相対 counts from that settled day, in 相対's direction. A
         # 前シフト turn a positive 相対 backwards would make "前シフト、相対 1" move
         # away from the anchor, which is not what the rule reads as.
         #
@@ -768,12 +782,12 @@ def jobcenter(
             Substitution.NEXT: 1,
         }.get(substitution[shift], 0)
     elif substitution[shift] in (Substitution.NEXT, Substitution.PREVIOUS):
-        kwargs["grace_days"] = _JOB_CENTER_GRACE
+        kwargs["grace_days"] = _COMPACT_GRACE
 
     return kwargs
 
 
-def jp1(
+def verbose_rule(
     *,
     kind: Kind = Kind.OPERATING,
     start_day: StartDay = StartDay.DAY,
@@ -789,10 +803,10 @@ def jp1(
     frequency: Frequency = Frequency.MONTHLY,
     scope: Scope = Scope.FREE,
 ) -> dict:
-    """Build rule kwargs using JP1/AJS3 vocabulary.
+    """Build rule kwargs using the classical, fully-explicit vocabulary.
 
     Argument names map 1:1 onto the 種別 / 開始日 / 振り替え / 起算 concepts, so
-    an existing JP1 definition can be transcribed directly.
+    an existing definition from such a scheduler can be transcribed directly.
     """
     return {
         "kind": kind,
@@ -816,11 +830,11 @@ def jp1(
 # --------------------------------------------------------------------------- #
 
 #: Named presets for the schedules that come up over and over in Japanese
-#: back-office work. Each maps to the JP1 construct that produces it, so the
+#: back-office work. Each maps to the construct that produces it, so the
 #: presets double as documentation.
 BUSINESS_DAY_RULES: dict[str, dict] = {
     # 月初営業日 / 第n営業日 (anchor-inclusive: 第1営業日 == 月初営業日)
-    "第1営業日": jp1(
+    "第1営業日": verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.DAY,
         day=1,
@@ -828,7 +842,7 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
         grace_days=30,
         frequency=Frequency.MONTHLY,
     ),
-    "月初営業日": jp1(
+    "月初営業日": verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.DAY,
         day=1,
@@ -837,7 +851,7 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
         frequency=Frequency.MONTHLY,
     ),
     # 月末営業日 / 当月末営業日
-    "月末営業日": jp1(
+    "月末営業日": verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.MONTH_END,
         day=0,
@@ -845,7 +859,7 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
         grace_days=30,
         frequency=Frequency.MONTHLY,
     ),
-    "当月末営業日": jp1(
+    "当月末営業日": verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.MONTH_END,
         day=0,
@@ -854,7 +868,7 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
         frequency=Frequency.MONTHLY,
     ),
     # 前月末営業日 (previous month's last working day)
-    "前月末営業日": jp1(
+    "前月末営業日": verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.MONTH_END,
         day=0,
@@ -864,8 +878,8 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
         frequency=Frequency.MONTHLY,
         scope=Scope.FREE,
     ),
-    # 月末営業日の前営業日 / 翌営業日 (relative to the anchor, per JP1 起算)
-    "月末前営業日": jp1(
+    # 月末営業日の前営業日 / 翌営業日 (relative to the anchor, per 起算)
+    "月末前営業日": verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.MONTH_END,
         day=0,
@@ -874,15 +888,15 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
         offset_grace_days=30,
         frequency=Frequency.MONTHLY,
     ),
-    "翌営業日": jp1(
+    "翌営業日": verbose_rule(
         substitution=Substitution.NEXT,
         grace_days=30,
     ),
-    "前営業日": jp1(
+    "前営業日": verbose_rule(
         substitution=Substitution.PREVIOUS,
         grace_days=30,
     ),
-    "毎営業日": jp1(frequency=Frequency.DAILY),
+    "毎営業日": verbose_rule(frequency=Frequency.DAILY),
 }
 
 
@@ -892,7 +906,7 @@ def nth_business_day(n: int) -> dict:
         raise ValueError(
             "n must be >= 1; count backwards from month end with nth_business_day_from_end()"
         )
-    return jp1(
+    return verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.DAY,
         day=n,
@@ -906,7 +920,7 @@ def nth_business_day_from_end(n: int) -> dict:
     """月末のn営業日前. ``n=0`` is 月末営業日 itself."""
     if n < 0:
         raise ValueError("n must be >= 0")
-    return jp1(
+    return verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.MONTH_END,
         day=n,
@@ -917,12 +931,12 @@ def nth_business_day_from_end(n: int) -> dict:
 
 
 def business_days_before(anchor: ScheduleRule, n: int) -> dict:
-    """Shift an anchor rule ``n`` working days earlier (JP1 起算スケジュール)."""
+    """Shift an anchor rule ``n`` working days earlier (起算スケジュール)."""
     return replace(anchor, offset=-n, count=Count.OPERATING, offset_grace_days=60)
 
 
 def business_days_after(anchor: ScheduleRule, n: int) -> dict:
-    """Shift an anchor rule ``n`` working days later (JP1 起算スケジュール)."""
+    """Shift an anchor rule ``n`` working days later (起算スケジュール)."""
     return replace(anchor, offset=n, count=Count.OPERATING, offset_grace_days=60)
 
 
@@ -959,7 +973,7 @@ def resolve_rules(
 ) -> ScheduleRule | None:
     """The first rule (in order) that yields ``day``, or None.
 
-    JobCenter gives later rules higher precedence, so callers should pass rules
+    simple_rule gives later rules higher precedence, so callers should pass rules
     in ascending priority and take the first match -- i.e. ``除外`` rules last.
     """
     for rule in rules:

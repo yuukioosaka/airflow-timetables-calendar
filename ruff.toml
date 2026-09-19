@@ -23,7 +23,7 @@ select = [
 ]
 
 ignore = [
-    # The docstrings quote JP1 / JobCenter terminology in Japanese, where
+    # The docstrings quote classical job-scheduler terminology in Japanese, where
     # full-width punctuation is correct. RUF001-003 mistake it for a typo.
     "RUF001",
     "RUF002",

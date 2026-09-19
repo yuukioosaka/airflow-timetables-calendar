@@ -1,23 +1,23 @@
-"""Tests for NEC WebSAM JobCenter semantics.
+"""Tests for the compact-notation rule semantics.
 
-These behaviours come from NEC's official blog article
-(https://jpn.nec.com/websam/jobcenter/blog/vol14.html), not from the formal
-reference manual, whose PDF is not machine-readable. Four consequences are
-deliberate and are the easy things to "fix" wrongly:
+This is the terse notation -- period, day, 休止日 shift, 相対 count -- as opposed
+to the fully explicit form built by ``verbose_rule()``. The behaviours below are
+part of that notation's documented semantics rather than incidental behaviour of
+this implementation, and four of them are deliberate and easy to "fix" wrongly:
 
-* ``day=N`` is the **Nth of the month**, because NEC writes 毎月（日付）
+* ``day=N`` is the **Nth of the month**, because the rule text is 毎月（日付）
   (monthly *by date*). The working-day families are 第n営業日, built with
   :func:`nth_business_day`. Reading ``day=30`` as "the 30th working day" moves
   the anchor into the following month, which is what three of this module's
   historical bugs really were.
 * ``相対 n`` counts n working days *from the settled anchor*, the anchor itself
-  being 0. ``相対 4`` on ``1日`` is the 5th business day (> NEC example A) and
-  ``相対 -2`` on ``L日`` is 月末の3営業日前 (NEC example B); both come out right only
+  being 0. ``相対 4`` on ``1日`` is the 5th business day (worked example A) and
+  ``相対 -2`` on ``L日`` is 月末の3営業日前 (worked example B); both come out right only
   under this reading.
 * The holiday shift is applied *before* ``相対`` is counted from, which is what
-  NEC's worked example (補足1: "1日→2日へ後シフト、20日→19日へ前シフト") shows.
+  The worked example (補足1: "1日→2日へ後シフト、20日→19日へ前シフト") shows.
   The shift step itself is not one of the counted steps.
-* Both stages must not walk. ``jobcenter()`` keeps the substitution from moving
+* Both stages must not walk. ``simple_rule()`` keeps the substitution from moving
   the date and lets the offset carry the whole distance, or every closed day in
   the span would be skipped twice.
 """
@@ -33,9 +33,9 @@ from airflow_timetables_calendar import (
     Frequency,
     ScheduleRule,
     build_rules,
-    jobcenter,
     period_for,
     resolve_rules,
+    simple_rule,
 )
 from conftest import SEPTEMBER_CLOSED, SyntheticCalendar
 
@@ -47,8 +47,8 @@ def cal() -> SyntheticCalendar:
 
 
 def resolve(cal, **kwargs):
-    """Build a JobCenter rule and resolve it in September 2026."""
-    return ScheduleRule(**jobcenter(**kwargs)).resolve(period_for(date(2026, 9, 1)), cal)
+    """Build a simple_rule rule and resolve it in September 2026."""
+    return ScheduleRule(**simple_rule(**kwargs)).resolve(period_for(date(2026, 9, 1)), cal)
 
 
 class TestRelativeCountsTheAnchorAsOne:
@@ -59,7 +59,7 @@ class TestRelativeCountsTheAnchorAsOne:
         [
             (0, date(2026, 9, 1)),  # 1日 itself, a Tuesday
             (1, date(2026, 9, 2)),
-            (4, date(2026, 9, 7)),  # NEC: 月初から5営業日目
+            (4, date(2026, 9, 7)),  # 月初から5営業日目
             (5, date(2026, 9, 8)),
         ],
     )
@@ -73,18 +73,18 @@ class TestRelativeCountsTheAnchorAsOne:
 
 
 class TestShiftThenCount:
-    """NEC 補足1: the anchor is shifted first, then ``相対`` counts from there.
+    """補足1: the anchor is shifted first, then ``相対`` counts from there.
 
     The 休止日 policy settles the anchor and ``相対`` then counts *further*
     working days from the settled date, the anchor itself counting as 0. Both of
-    NEC's published examples pin this down:
+    the published worked examples pin this down:
 
     * ``1日、休止日 後シフト、相対 4`` -> 月初から5営業日目. 09-01 is a working day, so
       the shift is a no-op and ``相対 4`` walks four days forward to the 5th.
     * ``L日、休止日 前シフト、相対 -2`` -> 月末の3営業日前. Month end is the anchor, and
       ``相対 -2`` walks two working days back from it.
 
-    Only *one* stage may walk. ``jobcenter()`` keeps the substitution from moving
+    Only *one* stage may walk. ``simple_rule()`` keeps the substitution from moving
     the date and lets the offset carry the whole distance, because chaining the
     two makes every closed day in the span cost two steps.
     """
@@ -128,7 +128,7 @@ class TestNegativeRelativeCountsBackwards:
     """``相対 n`` counts n working days from the settled anchor, in both directions.
 
     A negative ``相対`` lands *behind* the settled anchor, never ahead of it, and
-    the anchor itself is step 0 -- which is what NEC's worked examples show and
+    the anchor itself is step 0 -- which is what those worked examples show and
     what makes ``相対 4`` and ``相対 -2`` consistent with one another.
 
     Note that the settling step is *not* one of the counted steps: for a closed
@@ -170,8 +170,8 @@ class TestNegativeRelativeCountsBackwards:
 class TestAnchorsAreNotWalkedWhenOpen:
     """``day=N`` is the Nth of the month, so an open anchor needs no movement.
 
-    ``jobcenter()`` builds a 暦日 (absolute calendar day) anchor, which is what
-    NEC's 毎月（日付） means. Building it as a 運用日 count instead made ``day=30``
+    ``simple_rule()`` builds a 暦日 (absolute calendar day) anchor, which is what
+    毎月（日付） means. Building it as a 運用日 count instead made ``day=30``
     mean "the 30th working day", which lands in the *following* month and was
     the single root cause behind three of the four bugs this suite used to
     record: an overshooting anchor looks exactly like a sign inversion and like a
@@ -211,7 +211,7 @@ class TestMonthEnd:
 
 
 class TestLowerRulesWin:
-    """JobCenter gives the *last* listed rule precedence, which makes 除外 work.
+    """simple_rule gives the *last* listed rule precedence, which makes 除外 work.
 
     ``resolve_rules`` scans in list order and returns the first match, so callers
     append 除外 (exclusion) rules. ``virtual`` marks a rule as suppression-only.
@@ -221,7 +221,7 @@ class TestLowerRulesWin:
         include = ScheduleRule(kind="absolute", day=30)
         exclude = ScheduleRule(kind="absolute", day=30, virtual=True)
 
-        # `resolve_rules` returns the FIRST match in list order. NEC gives lower
+        # `resolve_rules` returns the FIRST match in list order. Lower-listed rules have higher
         # rules higher precedence, so the exclusion has to come first in the
         # list; listing it last is a silent no-op, which the next test pins.
         matched = resolve_rules(build_rules([exclude, include]), date(2026, 9, 30), cal)
@@ -248,11 +248,11 @@ class TestLowerRulesWin:
         assert resolve_rules(rules, date(2026, 9, 30), cal).virtual is True
         assert resolve_rules(rules, date(2026, 9, 15), cal) is None
 
-    def test_a_jobcenter_rule_composes_with_an_exclusion(self, cal):
+    def test_a_simple_rule_composes_with_an_exclusion(self, cal):
         # Both sides use the absolute form so the assertion does not depend on
         # the anchor-walk bug recorded in TestAnchorsAreWalkedEvenWhenOpen: this
         # test is about *precedence*, not about which day the rule lands on.
-        # Exclusions are ordinary rules, so a JobCenter-produced rule composes
+        # Exclusions are ordinary rules, so a simple_rule-produced rule composes
         # with them exactly the same way.
         include = ScheduleRule(kind="absolute", day=30)
         assert include.resolve(period_for(date(2026, 9, 1)), cal) == date(2026, 9, 30)
@@ -262,19 +262,19 @@ class TestLowerRulesWin:
         assert matched is not None and matched.virtual is True
 
 
-class TestJobCenterVocabulary:
-    """The keyword surface maps onto the JP1 model predictably."""
+class TestSimpleRuleVocabulary:
+    """The keyword surface maps onto the rule model predictably."""
 
     @pytest.mark.parametrize("period", ["daily", "weekly", "monthly", "yearly"])
     def test_known_periods_are_accepted(self, period):
-        assert jobcenter(period=period)["frequency"] == Frequency(period)
+        assert simple_rule(period=period)["frequency"] == Frequency(period)
 
     def test_an_unknown_period_is_rejected(self):
         with pytest.raises(ValueError):
-            jobcenter(period="fortnightly")
+            simple_rule(period="fortnightly")
 
     def test_the_defaults_are_monthly_on_the_first_with_no_shift(self):
-        kwargs = jobcenter()
+        kwargs = simple_rule()
         assert kwargs["frequency"] is Frequency.MONTHLY
         assert kwargs["day"] == 1
         assert kwargs["substitution"].value == "skip"
@@ -292,25 +292,56 @@ class TestJobCenterVocabulary:
         ],
     )
     def test_shift_vocabulary(self, shift, expected):
-        assert jobcenter(shift=shift)["substitution"].value == expected
+        assert simple_rule(shift=shift)["substitution"].value == expected
 
     def test_an_unknown_shift_is_rejected(self):
         with pytest.raises(ValueError, match="shift must be one of"):
-            jobcenter(shift="sideways")
+            simple_rule(shift="sideways")
 
     def test_a_string_day_other_than_l_is_rejected(self):
         with pytest.raises(ValueError, match='int or "L"'):
-            jobcenter(day="15")
+            simple_rule(day="15")
 
     def test_weekday_anchors_are_supported(self):
-        rule = ScheduleRule(**jobcenter(day=1, weekday="mon", shift="next"))
+        rule = ScheduleRule(**simple_rule(day=1, weekday="mon", shift="next"))
         # The 1st Monday of September 2026 is the 7th.
         assert rule.resolve(period_for(date(2026, 9, 1)), SyntheticCalendar()) == date(2026, 9, 7)
 
     def test_a_weekday_rule_keeps_the_month_number_as_the_ordinal(self):
-        rule = ScheduleRule(**jobcenter(day=3, weekday="wed", shift="next"))
+        rule = ScheduleRule(**simple_rule(day=3, weekday="wed", shift="next"))
         # The 3rd Wednesday of September 2026 is the 16th.
         assert rule.resolve(period_for(date(2026, 9, 1)), SyntheticCalendar()) == date(2026, 9, 16)
+
+
+class TestForwardRelativeCrossesMonthEnd:
+    """A forward 相対 may legitimately leave the month.
+
+    ``simple_rule()`` builds its anchor with ``scope=Scope.PERIOD`` (開始年月), so
+    a 相対 that steps past the last day of the month used to have its result
+    rejected by a check meant for the anchor. The whole schedule then resolved to
+    ``None`` and never fired at all -- while the *backward* direction, which
+    leaves the month the same way, resolved fine.
+    """
+
+    def test_relative_from_month_end_lands_in_the_next_month(self, cal):
+        # 09-30 is a working day, so the 前シフト is a no-op and 相対 1 walks to
+        # the first working day of October.
+        assert resolve(cal, day="L", shift="prev", relative=1) == date(2026, 10, 1)
+        assert resolve(cal, day="L", shift="prev", relative=2) == date(2026, 10, 2)
+
+    def test_relative_from_a_late_day_crosses_the_month_end(self, cal):
+        # 相対 2 from 09-29: 09-30 then 10-01.
+        assert resolve(cal, day=29, shift="next", relative=2) == date(2026, 10, 1)
+
+    def test_it_is_the_backward_direction_that_is_bounded(self, cal):
+        # The mirror case is a real error, so it must keep producing no run.
+        assert resolve(cal, day=1, shift="next", relative=-3) is None
+
+    def test_matches_agrees_with_resolve_at_the_boundary(self, cal):
+        # `matches()` is what actually decides scheduling, so the run has to be
+        # visible there too -- a rule that only resolves would never fire.
+        rule = ScheduleRule(**simple_rule(day="L", shift="prev", relative=1))
+        assert rule.matches(date(2026, 10, 1), cal) is True
 
 
 class TestWholeMonthSweepAgainstCalendar:
@@ -321,7 +352,7 @@ class TestWholeMonthSweepAgainstCalendar:
         # The real JP calendar, and the expected answer comes from its own
         # workday list -- hand-computed dates proved unreliable during development.
         cal = CalendarTimetable(calendar_id="JP", hour=21)
-        rule = ScheduleRule(**jobcenter(day=1, shift="next", relative=4))
+        rule = ScheduleRule(**simple_rule(day=1, shift="next", relative=4))
 
         workdays = [
             date(2026, month, d)
@@ -333,7 +364,7 @@ class TestWholeMonthSweepAgainstCalendar:
     @pytest.mark.parametrize("month", range(1, 13))
     def test_relative_minus_2_lands_two_working_days_before_month_end(self, month):
         cal = CalendarTimetable(calendar_id="JP", hour=21)
-        rule = ScheduleRule(**jobcenter(day="L", shift="prev", relative=-2))
+        rule = ScheduleRule(**simple_rule(day="L", shift="prev", relative=-2))
 
         workdays = [
             date(2026, month, d)

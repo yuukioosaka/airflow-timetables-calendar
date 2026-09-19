@@ -25,14 +25,14 @@ Usage::
     # Escape hatch: your own explicit list of non-working days
     CalendarTimetable(calendar_id="NONE", hour=9, exclude_dates=["2026-12-29"])
 
-    # JP1/AJS3- or JobCenter-style rules instead of "every working day"
-    from airflow_timetables_calendar import jobcenter, nth_business_day
+    # classical-style rules instead of "every working day"
+    from airflow_timetables_calendar import simple_rule, nth_business_day
 
     CalendarTimetable(calendar_id="JP", rules=["月末営業日"], hour=21)
-    CalendarTimetable(calendar_id="JP", rules=[jp1(kind=Kind.ABSOLUTE, day=15)], hour=21)
+    CalendarTimetable(calendar_id="JP", rules=[verbose_rule(kind=Kind.ABSOLUTE, day=15)], hour=21)
     CalendarTimetable(
         calendar_id="JP",
-        rules=[jobcenter(day="L", shift="prev", relative=-2)],
+        rules=[simple_rule(day="L", shift="prev", relative=-2)],
         hour=21,
     )
 
@@ -48,12 +48,12 @@ force ``pandas_market_calendars`` over the ``holidays`` financial calendar.
 :param exclude_dates: Extra ``YYYY-MM-DD`` dates to skip.
 :param include_dates: Extra ``YYYY-MM-DD`` dates to run on, even if the calendar
     would skip them (useful for one-off out-of-hours runs).
-:param rules: JP1/AJS3- or JobCenter-style schedule rules (see :mod:`.rules`).
-    Accepts preset names, ``jp1()`` / ``jobcenter()`` kwargs dicts, or
+:param rules: classical-style schedule rules (see :mod:`.rules`).
+    Accepts preset names, ``verbose_rule()`` / ``simple_rule()`` kwargs dicts, or
     ``ScheduleRule`` objects, in ascending priority. **Empty or None means "run on
     every working day"**, which is the plain holiday-only behaviour and stays the
     default so a timetable without rules is unaffected.
-:param base_day: JP1 基準日 -- the day of month a business "month" starts on.
+:param base_day: 基準日 -- the day of month a business "month" starts on.
     ``26`` makes 2026-08-26..2026-09-25 the "August" business month.
 """
 
@@ -160,7 +160,7 @@ class CalendarTimetable(CronTriggerTimetable):
 
     @property
     def base_day(self) -> int:
-        """JP1 基準日: the day of month a business "month" starts on."""
+        """基準日: the day of month a business "month" starts on."""
         return self._base_day
 
     @property

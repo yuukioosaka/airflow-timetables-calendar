@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "airflow-timetables-calendar"
 dynamic = ["version"]
-description = "Airflow timetables driven by real-world calendars, with JP1/AJS3- and JobCenter-style business-day rules"
+description = "Airflow timetables driven by real-world calendars, with business-day rules in the vocabulary of classical Japanese job schedulers"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
@@ -19,7 +19,6 @@ keywords = [
     "operating-day",
     "jp1",
     "ajs3",
-    "jobcenter",
     "japan",
     "schedule",
 ]

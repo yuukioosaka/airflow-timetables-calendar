@@ -3,9 +3,11 @@
 Two layers, usable together or separately:
 
 ``rules``
-    A business-day rule engine modelled on JP1/AJS3 and NEC WebSAM JobCenter
-    vocabulary (基準日, 運用日, 振り替え, 相対, ...). **No Airflow import**, so it
-    works in any scheduler or as a plain date calculator.
+    A business-day rule engine using the vocabulary of classical Japanese
+    job schedulers (基準日, 運用日, 振り替え, 相対, ...), in both a compact
+    (:func:`simple_rule`) and a fully explicit (:func:`verbose_rule`) form.
+    **No Airflow import**, so it works in any scheduler or as a plain date
+    calculator.
 
 ``timetable``
     :class:`CalendarTimetable`, an Airflow timetable that runs at a fixed local
@@ -55,12 +57,12 @@ from .rules import (
     business_days_before,
     calendar_days_after,
     calendar_days_before,
-    jobcenter,
-    jp1,
     nth_business_day,
     nth_business_day_from_end,
     period_for,
     resolve_rules,
+    simple_rule,
+    verbose_rule,
 )
 
 # NOTE: importing this package imports Airflow, because the timetable layer is
@@ -103,8 +105,8 @@ __all__ = [
     "business_days_before",
     "calendar_days_after",
     "calendar_days_before",
-    "jobcenter",
-    "jp1",
+    "simple_rule",
+    "verbose_rule",
     "nth_business_day",
     "nth_business_day_from_end",
     "period_for",
