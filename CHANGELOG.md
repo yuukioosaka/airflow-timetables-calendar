@@ -5,7 +5,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-09-20
+
+First public release.
+
+Requires **apache-airflow >= 3.2**. That floor is not arbitrary: a custom
+timetable needs both registration in the plugin registry *and*, from 3.2, a
+serializer registered against `_Serializer.serialize_timetable` in
+`airflow.serialization.encoders`. On 3.0 and 3.1 that module does not exist and
+the encoder raises `TimetableNotRegistered` before reaching
+`timetable.serialize()`, so a DAG using this timetable cannot be serialized. The
+CI matrix found this; `plugin.py` handles the absence explicitly so the failure
+is a clear log line rather than a traceback at import.
+
 
 ### Fixed
 
@@ -162,8 +174,8 @@ the round above because the only `month_offset` coverage was `-1` with
   it and the 猶予日数 window — the classical model lets a grace window override an
   expiry, which cannot arise here. See README "Not modelled".
 
-### Added
 
+### Added
 - **Every preset now has an English name as well as its Japanese one.** The
   Japanese spellings stay canonical -- they are what the source definitions are
   written in -- but `last_business_day`, `every_business_day` and the other seven
@@ -183,20 +195,6 @@ the round above because the only `month_offset` coverage was `-1` with
   stage is deliberately a no-op there — without it a 前シフト could be dragged
   forwards by a positive `相対`. It round-trips through the serializer.
 
-## [0.1.0] - 2026-09-19
-
-Initial release.
-
-Requires **apache-airflow >= 3.2**. That floor is not arbitrary: a custom
-timetable needs both registration in the plugin registry *and*, from 3.2, a
-serializer registered against `_Serializer.serialize_timetable` in
-`airflow.serialization.encoders`. On 3.0 and 3.1 that module does not exist and
-the encoder raises `TimetableNotRegistered` before reaching
-`timetable.serialize()`, so a DAG using this timetable cannot be serialized. The
-CI matrix found this; `plugin.py` handles the absence explicitly so the failure
-is a clear log line rather than a traceback at import.
-
-### Added
 
 - `CalendarTimetable`, an Airflow timetable that fires on working days only,
   resolved from a calendar id — a country (`JP`, `US-CA`), an exchange (`TSE`,
@@ -224,5 +222,4 @@ is a clear log line rather than a traceback at import.
 - `[exchanges]` extra for `pandas_market_calendars`, kept optional because it
   pulls in pandas; `holidays` is a core dependency.
 
-[Unreleased]: https://github.com/yuukioosaka/airflow-timetables-calendar/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/yuukioosaka/airflow-timetables-calendar/releases/tag/v0.1.0
