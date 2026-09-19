@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "airflow-timetables-calendar"
+dynamic = ["version"]
+description = "Airflow timetables driven by real-world calendars, with JP1/AJS3- and JobCenter-style business-day rules"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "yuukioosaka" }]
+keywords = [
+    "airflow",
+    "timetable",
+    "calendar",
+    "holidays",
+    "business-day",
+    "operating-day",
+    "jp1",
+    "ajs3",
+    "jobcenter",
+    "japan",
+    "schedule",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Systems Administration",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "apache-airflow>=3.0,<4",
+    "holidays>=0.60",
+]
+
+[project.optional-dependencies]
+# pandas_market_calendars pulls in pandas, so it is opt-in: country and
+# subdivision calendars cover most users, and holidays already ships financial
+# market calendars under its own registry.
+exchanges = ["pandas_market_calendars>=4.4"]
+test = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "freezegun>=1.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/yuukioosaka/airflow-timetables-calendar"
+Repository = "https://github.com/yuukioosaka/airflow-timetables-calendar"
+Issues = "https://github.com/yuukioosaka/airflow-timetables-calendar/issues"
+Changelog = "https://github.com/yuukioosaka/airflow-timetables-calendar/blob/main/CHANGELOG.md"
+
+# Registering through an entry point means pip install is enough: no file has to
+# be copied into the Airflow plugins/ directory, and every component (scheduler,
+# DAG processor, triggerer, worker) picks the timetable up from the installed
+# distribution.
+[project.entry-points."airflow.plugins"]
+calendar_timetable = "airflow_timetables_calendar.plugin:CalendarTimetablePlugin"
+
+[tool.hatch.version]
+path = "src/airflow_timetables_calendar/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/airflow_timetables_calendar"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+
+[tool.coverage.run]
+source = ["airflow_timetables_calendar"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

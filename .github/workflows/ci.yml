@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} / Airflow ${{ matrix.airflow }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Airflow 3 requires Python >= 3.9, but the 3.x releases that carry the
+        # API this package needs are 3.10+. 3.9 is intentionally absent: the
+        # serializer hook is reached through `CronTriggerTimetable`, and rather
+        # than advertise a combination we cannot install we pin the floor here
+        # and raise `requires-python` when the package stabilises.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        airflow: ["3.0.*", "3.1.*", "3.2.*", "3.3.*"]
+        exclude:
+          # Airflow 3.0 does not publish wheels for 3.13.
+          - python-version: "3.13"
+            airflow: "3.0.*"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        # `[exchanges]` is included so the exchange-calendar tests run rather
+        # than skip, and `[test]` brings pytest and coverage.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "apache-airflow==${{ matrix.airflow }}" --constraint \
+            "https://raw.githubusercontent.com/apache/airflow/constraints-${{ matrix.airflow }}/constraints-${{ matrix.python-version }}.txt"
+          python -m pip install -e ".[test,exchanges]"
+
+      - name: Show versions
+        run: |
+          python -c "import airflow, sys; print('airflow', airflow.__version__, 'python', sys.version)"
+
+      - name: Run tests
+        # A failing xfail would be reported as a failure because every xfail in
+        # the suite is strict, which is deliberate: the marks record known bugs
+        # and must flip to failures when those bugs are fixed.
+        run: python -m pytest -q --cov=airflow_timetables_calendar --cov-report=term-missing
+
+  # The rules engine and the calendar layer are deliberately Airflow-free so
+  # they can be reused by other schedulers. That is a claim worth testing, not
+  # a docstring: install without Airflow at all and import them.
+  airflow-free:
+    name: Core importable without Airflow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install without Airflow
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install holidays pytest
+          python -m pip install --no-deps -e .
+
+      - name: Import the Airflow-free modules
+        run: |
+          python -c "
+          import sys
+          import airflow_timetables_calendar.calendars as c
+          import airflow_timetables_calendar.rules as r
+          assert 'airflow' not in sys.modules, 'an Airflow-free module imported Airflow'
+          from datetime import date
+          from airflow_timetables_calendar.rules import ScheduleRule, nth_business_day, period_for
+          from airflow_timetables_calendar.calendars import resolve_calendar
+          rules = ScheduleRule(**nth_business_day(1))
+          print('core import OK:', rules)
+          "
+
+  lint:
+    name: Lint and type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff mypy apache-airflow holidays pandas_market_calendars
+
+      - name: Ruff
+        run: ruff check --output-format=github .
+
+      - name: Ruff format
+        run: ruff format --check --diff .
+
+      - name: Mypy
+        run: mypy src/airflow_timetables_calendar
+
+  build:
+    name: Build and validate the distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check the metadata
+        run: python -m twine check --strict dist/*
+
+      - name: Verify the wheel installs and registers its entry point
+        run: |
+          python -m pip install dist/*.whl
+          python -c "
+          from importlib.metadata import entry_points, version
+          print('installed', version('airflow-timetables-calendar'))
+          eps = {ep.name: ep.value for ep in entry_points(group='airflow.plugins')}
+          assert eps['calendar_timetable'].endswith('plugin:CalendarTimetablePlugin'), eps
+          print('entry point OK:', eps['calendar_timetable'])
+          "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
