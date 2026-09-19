@@ -127,7 +127,7 @@ the classical model:
 | 基準日 (base date) | where a "month" starts. `base_day=26` makes 2026-08-26..2026-09-25 the "August" business month |
 | 基準時刻 (base time) | how the classical model rolls a *business date* over, so that 08:00..next-day 07:59 is one business day and a run at "25:00" still belongs to the previous date. **Not modelled here**: `CalendarTimetable` uses a plain wall-clock `hour`/`minute`, so the range is 0–23 and a 48時間制 schedule cannot be expressed. Use the `timezone` to place the run, and see [Not modelled](#not-modelled) |
 | 種別 (kind) | what the offset counts: `ABSOLUTE` 暦日 (a plain calendar date), `RELATIVE` 相対日 (calendar days from the 基準日 — identical to `ABSOLUTE` when `base_day=1`), `OPERATING` 運用日 (working days → 第n営業日), `CLOSED` 休業日, `REGISTERED` 登録日 |
-| 開始日 (start day) | `DAY` 日付指定, `MONTH_END` 月末指定, `WEEKDAY` 曜日指定 |
+| 開始日 (start day) | `DAY` 日付指定, `MONTH_END` 月末指定, `WEEKDAY` 曜日指定. What the resulting day is *measured from* depends on the 種別 — see [Where a 開始日 is measured from](#where-a-%E9%96%8B%E5%A7%8B%E6%97%A5-is-measured-from) |
 | 休業日の振り替え | what to do when the day is closed: `SKIP` 実行しない, `PREVIOUS` 前の運用日, `NEXT` 次の運用日, `RUN_ANYWAY` 振り替えなし |
 | 起算スケジュール | a final `n` working-day (`OPERATING`) or calendar-day (`CALENDAR`) adjustment |
 | 猶予日数 (grace days) | the maximum distance a shift may travel, counted in *calendar* days. **Beyond it, that occurrence produces no run at all** — matching the classical model, this is not an error. The window also bounds how far a rule may reach, so a wider 猶予日数 costs more work in `matches()`. **`grace_days=0` means "use the default", not "zero tolerance"** — omit it unless you need a tighter window |
@@ -160,6 +160,42 @@ CalendarTimetable(
     rules=[nth_business_day_from_end(0)],
 )
 ```
+
+### Where a 開始日 is measured from
+
+The 種別 and the 開始日 are not independent: which origin a day is counted from
+is decided by the 種別, and the two axes are easy to conflate because they
+collapse to the same answer whenever `base_day=1`.
+
+| 種別 | 日付指定 | 月末指定 | 曜日指定 |
+|---|---|---|---|
+| `ABSOLUTE` 絶対日 | the **calendar month** | the **calendar month**'s last day | the **calendar month**'s weeks |
+| `RELATIVE` 相対日 | the **基準日** (1-based) | the **period**'s last day | weeks counted **from the 基準日** |
+| `OPERATING` 運用日 | the period's Nth 運用日 | the **period**'s last 運用日 | — |
+| `CLOSED` 休業日 | the period's Nth 休業日 | the **period**'s last 休業日 | — |
+
+"Period" means the 基準日-defined business month. So with `base_day=26`, the
+period opening 2026-08-26 closes on **2026-09-25**, and:
+
+```python
+# 月末営業日: the last working day of the *period* -> 2026-09-25
+CalendarTimetable(calendar_id="JP", hour=21, base_day=26,
+                  rules=[nth_business_day_from_end(0)])
+
+# 絶対日 + 月末指定 keeps the calendar reading -> 2026-08-31
+CalendarTimetable(calendar_id="JP", hour=21, base_day=26,
+                  rules=[verbose_rule(kind=Kind.ABSOLUTE,
+                                      start_day=StartDay.MONTH_END, day=0)])
+```
+
+The 曜日指定 origin has a matching split: 絶対日 counts weeks from the 1st of
+the calendar month, while 相対日 counts them from the 基準日, so with
+`base_day=26` "the 1st Monday" is 2026-08-31 under 相対日 but 2026-08-03 under
+絶対日. An occurrence that does not exist within the period names the period's
+last day rather than walking into the next one.
+
+Set `base_day=1` (the default) and both readings are the same thing, because the
+基準日 *is* the 1st. That is why this only matters once a 基準日 is configured.
 
 ### Rules without Airflow
 
@@ -219,6 +255,10 @@ the README describes them only so that the rest makes sense:
 - **振り替え猶予日数 bounds.** The classical model documents a 1–31 day window.
   `grace_days` is not range-checked, and `grace_days=0` selects the default
   window rather than a zero-day one.
+- **曜日指定 for 運用日 / 休業日.** The specification's 開始日 table defines
+  曜日指定 only for 絶対日 and 相対日, so the two 運用日 / 休業日 combinations are
+  undefined. They are accepted here and resolve against the calendar month,
+  which is a local choice rather than a documented behaviour.
 
 If you need any of these, they are the natural next things to add — see
 `rules.py`, where each is a self-contained stage.

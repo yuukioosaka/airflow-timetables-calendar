@@ -238,6 +238,24 @@ class Period:
         """
         return date(self.year, self.month, 1)
 
+    def period_month(self, base_day: int) -> tuple[int, int]:
+        """The ``(year, month)`` whose *calendar month end* closes this period.
+
+        ``base_day=26`` makes the period that opens on 2026-08-26 run through
+        2026-09-25, so the period's last day belongs to **September** -- one
+        calendar month later than the period's own label. With ``base_day=1``
+        the period already ends on its own month's last day, so the answer is
+        the label itself.
+
+        This is the origin the 月末指定 forms are named against once the 種別
+        is anything other than 絶対日.
+        """
+        if base_day <= 1:
+            return (self.year, self.month)
+        if self.start.month < 12:
+            return (self.start.year, self.start.month + 1)
+        return (self.start.year + 1, 1)
+
     def anchor(self, period_offset: int = 0) -> date:
         """The period's base date, shifted by whole periods."""
         period = self
@@ -253,6 +271,11 @@ def _days_in_month(year: int, month: int) -> int:
     if month == 12:
         return 31
     return (date(year, month + 1, 1) - timedelta(days=1)).day
+
+
+def _month_end(year: int, month: int) -> date:
+    """The calendar month's last day."""
+    return date(year, month, _days_in_month(year, month))
 
 
 def _clamp_day(year: int, month: int, day: int) -> date:
@@ -449,43 +472,55 @@ class ScheduleRule:
     def _anchor_day(self, period: Period, cal: WorkingDayCalendar) -> date | None:
         """The date named by 種別 + 開始日, before holiday substitution.
 
-        Two different origins are in play, and the 種別 decides which:
+        Every 開始日 names its anchor against one of three origins, and the 種別
+        picks which -- the two axes are not independent:
 
-        * 絶対日 (日付指定) and 曜日指定 are named against *the calendar
-          month*, so they take the month the 基準日 falls in -- 「暦の上での
-          日付（月初めは1日）」. That is ``period.anchor_month``, not
-          ``period.start``, which equals the 基準日 only when ``base_day=1``.
-        * 相対日 (日付指定) is named against *the 基準日 itself*, so it counts
-          from ``period.start`` -- 「基準日として指定した日付から起算した
-          日付で，「何日」という形で日付を指定する」. With ``base_day=1`` the
-          基準日 is the 1st, which is why the two readings only diverge once
-          a ``base_day`` is set.
-        * 運用日 / 休業日 (日付指定) are *counts* within the period; the
-          off-by-one shift lives in those methods, not here.
+        * 絶対日 uses **the calendar month** for all three 開始日 forms, because
+          it is the kind that is explicitly 「暦の上での日付（月初めは1日）」.
+        * 相対日 / 運用日 / 休業日 use **the 基準日の指定に基づいた期間**, i.e.
+          the scheduler month, for 月末指定 -- 「基準日の指定に基づいた期間を
+          1か月とし，「月の最終日から何日前」」.
+        * 相対日 counts 日付指定 from **the 基準日 itself** -- 「基準日として
+          指定した日付から起算した日付で，「何日」という形で日付を指定す
+          る」 -- while 絶対日 counts it from the calendar month's first day.
+
+        Every one of these collapses to the same answer when ``base_day=1``,
+        because the 基準日 is then the 1st and the scheduler month is the
+        calendar month. That is why ``base_day=1`` is the default and why the
+        distinction only surfaces once a 基準日 is configured.
         """
-        month = period.anchor_month
+        calendar_month = period.anchor_month
+
         if self.kind is Kind.REGISTERED:
             # 登録日 is the job's registration date, which has nothing to do with
             # the period; resolve against the period's own start.
             return period.start
 
+        # 絶対日 alone is named against the calendar month; every other kind is
+        # named against the scheduler month that 基準日 defines.
+        relative_to_period = self.kind is not Kind.ABSOLUTE
+
         if self.start_day is StartDay.WEEKDAY:
-            return self._nth_weekday(month)
+            if relative_to_period:
+                return self._nth_weekday_in_period(period)
+            return self._nth_weekday(calendar_month)
 
         if self.start_day is StartDay.MONTH_END:
-            return self._from_month_end(month, cal)
+            if relative_to_period:
+                # 「基準日の指定に基づいた期間を1か月とし，月の最終日から何日前」
+                return self._from_month_end(period.end, cal)
+            return self._from_month_end(_month_end(calendar_month.year, calendar_month.month), cal)
 
         if self.kind is Kind.ABSOLUTE:
-            return _clamp_day(month.year, month.month, self.day)
+            return _clamp_day(calendar_month.year, calendar_month.month, self.day)
         if self.kind is Kind.RELATIVE:
-            # 相対日 counts calendar days from the 基準日, so the origin is
-            # ``period.start`` rather than ``period.anchor_month``. 何日 is
-            # 1-based (the same convention 絶対日 uses), so day=1 IS the 基準日.
+            # 相対日 counts calendar days from the 基準日 itself. 何日 is 1-based
+            # (the same convention 絶対日 uses), so day=1 IS the 基準日.
             return period.start + timedelta(days=self.day - 1)
         if self.kind is Kind.OPERATING:
-            return self._nth_working_day_in_period(month, self.day, cal)
+            return self._nth_working_day_in_period(calendar_month, self.day, cal)
         if self.kind is Kind.CLOSED:
-            return self._nth_closed_day_in_period(month, self.day, cal)
+            return self._nth_closed_day_in_period(calendar_month, self.day, cal)
         raise AssertionError(f"unhandled kind {self.kind!r}")
 
     def _nth_weekday(self, anchor: date) -> date:
@@ -520,13 +555,35 @@ class ScheduleRule:
             return last_of_month
         return first + timedelta(days=delta + 7 * (self.day - 1))
 
-    def _from_month_end(self, anchor: date, cal: WorkingDayCalendar) -> date | None:
-        """月末指定: walk back ``day`` days from the anchor month's last day.
+    def _nth_weekday_in_period(self, period: Period) -> date:
+        """曜日指定 counted from the 基準日 rather than the calendar month.
+
+        相対日's 曜日指定 is 「基準日として指定した日付から起算して「第何週目
+        の何曜日」」, so week 1 is the week containing the 基準日. The *first*
+        occurrence is therefore the first <weekday> on or after ``period.start``,
+        and the search runs forward from there without leaving the period -- an
+        occurrence past ``period.end`` names the period's last day, the same way
+        an out-of-range ``day`` names the month's last day in the 絶対日 reading.
+        """
+        if self.weekday is None:
+            raise ValueError("start_day=WEEKDAY requires weekday=<Weekday>")
+        first = period.start + timedelta(days=(self.weekday.index - period.start.weekday()) % 7)
+        last = period.end
+        if first > last:
+            return last
+        occurrence = first + timedelta(days=7 * (self.day - 1))
+        return min(occurrence, last)
+
+    def _from_month_end(self, last: date, cal: WorkingDayCalendar) -> date | None:
+        """月末指定: walk back ``day`` days from the period's last day.
+
+        ``last`` is the closing day of whichever month the caller decided the
+        種別 names -- the calendar month for 絶対日, the scheduler month defined
+        by 基準日 for 相対日 / 運用日 / 休業日.
 
         The count is inclusive of the last day, so ``OPERATING, day=0`` is
         月末営業日 and ``day=1`` is 月末の前営業日.
         """
-        last = date(anchor.year, anchor.month, _days_in_month(anchor.year, anchor.month))
         if self.kind is Kind.OPERATING:
             return self._nth_working_day_back_from(last, self.day, cal)
         if self.kind is Kind.CLOSED:

@@ -452,9 +452,10 @@ class TestBaseDayIntegration:
     """Rules evaluated inside a 26th-to-25th business month.
 
     With ``base_day=26`` the period containing 2026-09-10 runs
-    2026-08-26..2026-09-25, and it is anchored in **August**: the day-based 開始日
-    forms (日付指定 / 月末指定 / 曜日指定) count within that anchor month, because
-    that is where the 基準日 sits.
+    2026-08-26..2026-09-25 and is anchored in **August**. Which origin a 開始日
+    counts from depends on the 種別, so this class pins both readings down:
+    絶対日 counts within the calendar month the 基準日 falls in (August), while
+    相対日 / 運用日 / 休業日 count within the **period** that 基準日 defines.
     """
 
     @pytest.fixture
@@ -468,12 +469,30 @@ class TestBaseDayIntegration:
     def test_anchor_month_is_august(self, period):
         assert period.anchor_month == date(2026, 8, 1)
 
-    def test_month_end_working_day_is_augusts(self, period, open_calendar):
-        # 2026-08-31 is a Monday, so it is August's last working day -- which falls
-        # inside this period, as intended.
+    def test_month_end_working_day_closes_the_period_not_the_calendar_month(
+        self, period, open_calendar
+    ):
+        # 運用日 x 月末指定 is 「基準日の指定に基づいた期間を1か月とし，「月の最終
+        # 日から何日前の運用日」」, so the month end it walks back from is the
+        # *period's* last day (2026-09-25), not the calendar August's (08-31).
+        # 09-25 is a Friday, and with no holidays it is already a 運用日.
         got = rule(**nth_business_day_from_end(0)).resolve(period, open_calendar)
-        assert got == date(2026, 8, 31)
+        assert got == date(2026, 9, 25)
         assert period.contains(got)
+
+    def test_absolute_month_end_working_day_stays_in_the_calendar_month(
+        self, period, open_calendar
+    ):
+        # 絶対日 is the exception: 「暦の上での日付で，「月の最終日から何日前」」,
+        # so it keeps walking back from the calendar month's last day.
+        got = rule(
+            kind=Kind.ABSOLUTE,
+            start_day=StartDay.MONTH_END,
+            day=0,
+            substitution=Substitution.PREVIOUS,
+            grace_days=30,
+        ).resolve(period, open_calendar)
+        assert got == date(2026, 8, 31)
 
     def test_first_working_day_counted_within_august(self, period, open_calendar):
         # 2026-08-26 is a Wednesday, so it is both the period start and the first
@@ -482,9 +501,11 @@ class TestBaseDayIntegration:
         assert got == date(2026, 8, 3)  # counting from the 1st of August
 
     def test_month_offset_moves_a_whole_period(self, period, open_calendar):
-        # 前月末営業日 = the previous *period's* month-end, i.e. July's.
+        # 前月末営業日 = the previous *period's* closing 運用日. The period here is
+        # 2026-08-26..09-25, so the one before it is 2026-07-26..08-25 and its
+        # last day, 08-25, is a Tuesday -- already a 運用日.
         got = rule(**BUSINESS_DAY_RULES["前月末営業日"]).resolve(period, open_calendar)
-        assert got == date(2026, 7, 31)
+        assert got == date(2026, 8, 25)
 
     def test_scope_period_binds_to_the_anchor_month(self, period, open_calendar):
         # 第3営業日 refers to the month 基準日 is in -- August, the anchor month --
@@ -502,6 +523,106 @@ class TestBaseDayIntegration:
 # --------------------------------------------------------------------------- #
 # Presets and builders
 # --------------------------------------------------------------------------- #
+
+
+class TestStartDayOriginFollowsTheKind:
+    """表3-7 -- the 開始日 origin is chosen by the 種別, not by the 開始日 alone.
+
+    絶対日 is the only kind named against the calendar month; 相対日 / 運用日 /
+    休業日 are named against 基準日の指定に基づいた期間. Every reading collapses
+    to the same answer at ``base_day=1``, which is why the distinction only
+    shows up once a 基準日 is configured.
+    """
+
+    @pytest.fixture
+    def period(self) -> Period:
+        """The period 2026-08-26..2026-09-25, i.e. base_day=26's "August"."""
+        return period_for(date(2026, 9, 10), base_day=26)
+
+    def test_month_end_walks_back_from_the_period_for_non_absolute_kinds(
+        self, period, open_calendar
+    ):
+        # The period's last day is 09-25; the calendar August's is 08-31. Both
+        # 日付指定-style kinds anchor on the period's closing day. 休業日 is a
+        # *count* of closed days rather than a date, so day=0 names the closest
+        # closed day at or before that anchor -- 09-25 is a Friday, hence 09-20.
+        expected = {
+            Kind.RELATIVE: date(2026, 9, 25),
+            Kind.OPERATING: date(2026, 9, 25),
+            Kind.CLOSED: date(2026, 9, 20),
+        }
+        for kind, want in expected.items():
+            got = rule(
+                kind=kind,
+                start_day=StartDay.MONTH_END,
+                day=0,
+                substitution=Substitution.RUN_ANYWAY,
+            ).resolve(period, open_calendar)
+            assert got == want, kind
+
+    def test_month_end_walks_back_from_the_calendar_month_for_absolute(self, period, open_calendar):
+        got = rule(
+            kind=Kind.ABSOLUTE,
+            start_day=StartDay.MONTH_END,
+            day=0,
+            substitution=Substitution.RUN_ANYWAY,
+        ).resolve(period, open_calendar)
+        assert got == date(2026, 8, 31)
+
+    def test_month_end_counting_backwards_uses_the_period(self, period, open_calendar):
+        # day=1 is the 運用日 before the period's closing day, so it lands on
+        # 09-24 rather than on 08-28 (the day before August's calendar month end).
+        got = rule(
+            kind=Kind.OPERATING,
+            start_day=StartDay.MONTH_END,
+            day=1,
+            substitution=Substitution.RUN_ANYWAY,
+        ).resolve(period, open_calendar)
+        assert got == date(2026, 9, 24)
+
+    def test_weekday_counts_weeks_from_the_base_date(self, period, open_calendar):
+        # 相対日's 曜日指定 is 「基準日として指定した日付から起算して「第何週目の
+        # 何曜日」」, so week 1 is the week containing 08-26. 08-26 is a Wednesday,
+        # so the first Monday on or after it is 08-31; the 2nd is 09-07.
+        got = rule(start_day=StartDay.WEEKDAY, weekday=Weekday.MON, day=2).resolve(
+            period, open_calendar
+        )
+        assert got == date(2026, 9, 7)
+
+    def test_weekday_stays_inside_the_period(self, period, open_calendar):
+        # The 8th Monday on or after 08-26 would be 10-19, past the period end of
+        # 09-25, so it names the closing day instead of walking out of the period.
+        got = rule(start_day=StartDay.WEEKDAY, weekday=Weekday.MON, day=8).resolve(
+            period, open_calendar
+        )
+        assert got == date(2026, 9, 25)
+
+    def test_every_kind_coincides_when_the_base_day_is_one(self, open_calendar):
+        # With the default 開始日 the 基準日 is the 1st, so the scheduler month and
+        # the calendar month are the same and the two readings agree exactly.
+        period = period_for(date(2026, 8, 10))
+        for kind in (Kind.ABSOLUTE, Kind.RELATIVE, Kind.OPERATING):
+            got = rule(
+                kind=kind,
+                start_day=StartDay.MONTH_END,
+                day=0,
+                substitution=Substitution.RUN_ANYWAY,
+            ).resolve(period, open_calendar)
+            assert got == date(2026, 8, 31), kind
+        # 休業日 counts closed days, so day=0 is the last closed day at or before
+        # 08-31 -- the Sunday 08-30 -- under either reading of the month end.
+        assert rule(
+            kind=Kind.CLOSED,
+            start_day=StartDay.MONTH_END,
+            day=0,
+            substitution=Substitution.RUN_ANYWAY,
+        ).resolve(period, open_calendar) == date(2026, 8, 30)
+
+    def test_period_closing_day_is_the_calendar_month_end_of_the_month_after(self, period):
+        assert period.end == date(2026, 9, 25)
+        assert period.period_month(26) == (2026, 9)
+        # base_day=1 has nothing to roll over.
+        assert period_for(date(2026, 9, 10)).period_month(1) == (2026, 9)
 
 
 class TestPresets:

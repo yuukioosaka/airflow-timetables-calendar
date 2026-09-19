@@ -124,6 +124,22 @@ the round above because the only `month_offset` coverage was `-1` with
   2026-08-26 rather than an October date, and with the default `base_day=1` the
   two readings coincide, which is why nothing else moved.
   (`tests/test_rules.py::TestAbsoluteAndRelativeDays`)
+- **月末指定 and 曜日指定 now use the period, not the calendar month, for every
+  種別 other than 絶対日.** 開始日 is not measured from the same origin in every
+  case: 絶対日 is defined as 暦の上での日付, so it names a day of the calendar
+  month, but 相対日 / 運用日 / 休業日 are defined as 基準日の指定に基づいた期間を
+  1か月として, so they name a day of the **business month the 基準日 defines**.
+  All of them were using the calendar month.
+
+  With `base_day=26`, the period opening 2026-08-26 closes on **2026-09-25**, so
+  `月末営業日` now resolves to 2026-09-25 where it used to give the calendar
+  August's 2026-08-31, and 前月末営業日 gives 2026-08-25 where it used to reach
+  two months back to 2026-07-31. 曜日指定 for 相対日 counts weeks from the
+  基準日, so "the 1st Monday" is 2026-08-31 rather than the calendar month's
+  2026-08-03. `base_day=1` is unaffected, which is why the default path and the
+  production fingerprint do not move.
+  (`tests/test_rules.py::TestStartDayOriginFollowsTheKind`)
+
 ### Changed
 
 - `Scope.PERIOD` (開始年月) is now a bound on **the months a rule applies from**
@@ -135,12 +151,12 @@ the round above because the only `month_offset` coverage was `-1` with
   deliberately skipped once `month_offset` has moved the anchor. A movement may
   carry the result forward or backward out of the period, which is what 振り替え
   and 起算 are for. `Scope.FREE` is unchanged.
-- The 種別 now decides which origin a day-based 開始日 is measured from, since
-  the classical model uses two. 絶対日 and 曜日指定 are named against **the
-  calendar month**, so they keep using the month the 基準日 falls in; 相対日 is
-  named against **the 基準日 itself** and now uses `period.start`. `base_day=1`
-  makes the 基準日 the 1st and the two coincide, so this only surfaces with a
-  `base_day`.
+- The 種別 decides which origin a 開始日 is measured from, since the classical
+  model defines three. The README now tabulates them: 絶対日 is the only kind
+  named against the **calendar month**; 相対日 / 運用日 / 休業日 use the period
+  for 月末指定 and 相対日 counts 日付指定 and 曜日指定 from the **基準日 itself**.
+  `base_day=1` makes the 基準日 the 1st and every reading coincides, so this only
+  surfaces once a `base_day` is set.
 - The 開始年月 documentation is now explicit that it is a *lower* bound only.
   There is no 有効期日 (validity end date), and therefore no interaction between
   it and the 猶予日数 window — the classical model lets a grace window override an
