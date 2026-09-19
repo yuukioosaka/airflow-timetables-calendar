@@ -262,3 +262,68 @@ class TestFortyEightHourClock:
         restored = CalendarTimetable.deserialize(tt.serialize())
         assert restored.hour == hour
         assert restored == tt
+
+
+class TestNoDayOfWeekFilterInCron:
+    """The cron expression must not filter on the *run* weekday.
+
+    A run belongs to a business date that the 48-hour clock can shift by a day,
+    so ``hour=25`` makes a Friday business date run on a Saturday. A ``1-5``
+    day-of-week field filters the run date instead, which silently dropped every
+    Friday for every hour at or above 24.
+    """
+
+    def test_cron_expression_has_no_day_of_week_restriction(self):
+        tt = CalendarTimetable(calendar_id="JP", hour=25)
+        assert tt._expression.split()[-1] == "*"
+
+    @pytest.mark.parametrize("hour", [24, 25, 47])
+    def test_next_day_hours_still_produce_friday_business_dates(self, hour):
+        tt = CalendarTimetable(calendar_id="JP", hour=hour, rules=["毎営業日"])
+        moment = datetime(2026, 6, 1, 0, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+        business_dates = []
+        for _ in range(90):
+            moment = tt._get_next(moment)
+            business_dates.append(tt._business_date(moment))
+        assert any(d.weekday() == 4 for d in business_dates)
+
+    @pytest.mark.parametrize("hour", [24, 25, 47])
+    def test_next_day_hours_cover_the_same_business_dates_as_2100(self, hour):
+        # The 48-hour clock moves *when* a run happens, never *which* business
+        # dates exist, so the set must be identical to the plain 21:00 schedule.
+        def dates_for(hours):
+            tt = CalendarTimetable(calendar_id="JP", hour=hours, rules=["毎営業日"])
+            moment = datetime(2026, 6, 1, 0, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+            out = []
+            for _ in range(60):
+                moment = tt._get_next(moment)
+                out.append(tt._business_date(moment))
+            return set(out)
+
+        assert dates_for(hour) == dates_for(21)
+
+    def test_next_day_run_lands_on_the_adjacent_weekday(self):
+        # A Friday business date under hour=25 runs on the Saturday, which is
+        # exactly what the removed filter used to reject.
+        tt = CalendarTimetable(calendar_id="JP", hour=25, rules=["毎営業日"])
+        moment = datetime(2026, 6, 1, 0, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+        for _ in range(90):
+            moment = tt._get_next(moment)
+            local = moment.astimezone(ZoneInfo("Asia/Tokyo"))
+            business = tt._business_date(moment)
+            if business.weekday() == 4:
+                assert local.weekday() == 5
+                assert local.hour == 1
+                return
+        raise AssertionError("no Friday business date found")
+
+    @pytest.mark.parametrize("hour", [0, 9, 21, 23, 24, 25, 47, -1, -24, -47])
+    def test_no_business_date_is_produced_twice(self, hour):
+        tt = CalendarTimetable(calendar_id="JP", hour=hour, rules=["毎営業日"])
+        moment = datetime(2026, 6, 1, 0, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+        seen = []
+        for _ in range(60):
+            moment = tt._get_next(moment)
+            seen.append(tt._business_date(moment))
+        assert len(seen) == len(set(seen))
+        assert all(tt.is_working_day(d) for d in seen)

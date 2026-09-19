@@ -518,9 +518,11 @@ class ScheduleRule:
             # (the same convention 絶対日 uses), so day=1 IS the 基準日.
             return period.start + timedelta(days=self.day - 1)
         if self.kind is Kind.OPERATING:
-            return self._nth_working_day_in_period(calendar_month, self.day, cal)
+            origin = period.start if relative_to_period else calendar_month
+            return self._nth_working_day_in_period(origin, self.day, cal)
         if self.kind is Kind.CLOSED:
-            return self._nth_closed_day_in_period(calendar_month, self.day, cal)
+            origin = period.start if relative_to_period else calendar_month
+            return self._nth_closed_day_in_period(origin, self.day, cal)
         raise AssertionError(f"unhandled kind {self.kind!r}")
 
     def _nth_weekday(self, anchor: date) -> date:
@@ -593,20 +595,29 @@ class ScheduleRule:
     def _nth_working_day_in_period(
         self, anchor: date, n: int, cal: WorkingDayCalendar
     ) -> date | None:
-        """The n-th 運用日 from the start of the anchor's month (n=1 is 月初営業日)."""
+        """The n-th 運用日 counting from ``anchor`` (n=1 is the anchor's own day).
+
+        ``anchor`` is the period's start for ``OPERATING`` (the 基準日-defined
+        month) and the calendar month's first day for the ``ABSOLUTE`` reading,
+        which is what lets 第n営業日 follow 基準日 while 絶対日 keeps the calendar
+        month. Counting from the first of the month regardless put ``base_day=26``
+        answers *before* the period they belonged to.
+        """
         if n < 1:
             return None
-        return self._scan(date(anchor.year, anchor.month, 1), 1, n - 1, cal.is_working_day)
+        return self._scan(anchor, 1, n - 1, cal.is_working_day)
 
     def _nth_closed_day_in_period(
         self, anchor: date, n: int, cal: WorkingDayCalendar
     ) -> date | None:
-        """The n-th 休業日 from the start of the anchor's month (n=1 is the first one)."""
+        """The n-th 休業日 counting from ``anchor`` (n=1 is ``anchor`` if it is closed).
+
+        Same origin rule as :meth:`_nth_working_day_in_period`: the period start
+        for the 基準日-relative kinds, the calendar month's first day for 絶対日.
+        """
         if n < 1:
             return None
-        return self._scan(
-            date(anchor.year, anchor.month, 1), 1, n - 1, lambda d: not cal.is_working_day(d)
-        )
+        return self._scan(anchor, 1, n - 1, lambda d: not cal.is_working_day(d))
 
     def _nth_working_day_back_from(
         self, last: date, n: int, cal: WorkingDayCalendar

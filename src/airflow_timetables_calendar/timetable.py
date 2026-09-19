@@ -184,7 +184,14 @@ class CalendarTimetable(CronTriggerTimetable):
         # day offset is applied when deciding which *business* date that run
         # belongs to (see _business_date). Splitting them is what lets 25:00
         # both run on the next morning and resolve its rule against today.
-        super().__init__(f"{minute} {hour_of_day} * * 1-5", timezone=timezone)
+        #
+        # There is deliberately no ``1-5`` day-of-week field. cron filters on the
+        # day the job *runs*, but a run belongs to a business date that the
+        # 48-hour clock can shift by a day, so a Friday business date under
+        # ``hour=25`` runs on a Saturday -- and the cron filter would silently
+        # drop every Friday. The working-day test therefore happens in
+        # ``_is_skipped``, against the business date rather than the run date.
+        super().__init__(f"{minute} {hour_of_day} * * *", timezone=timezone)
 
         # Validates the id now, so a typo fails at DAG-parse time with a clear
         # message instead of silently scheduling on holidays.

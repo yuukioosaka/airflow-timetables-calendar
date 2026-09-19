@@ -497,11 +497,14 @@ class TestBaseDayIntegration:
         ).resolve(period, open_calendar)
         assert got == date(2026, 8, 31)
 
-    def test_first_working_day_counted_within_august(self, period, open_calendar):
-        # 2026-08-26 is a Wednesday, so it is both the period start and the first
-        # working day of the anchor month that is >= the period start.
+    def test_first_working_day_counted_from_the_period_start(self, period, open_calendar):
+        # 2026-08-26 is a Wednesday, so it is both the period start and 第1営業日.
+        # Counting from the 1st of the calendar month instead answered 08-03 --
+        # a date *before* the period it was supposed to belong to, outside the
+        # very window 開始年月 bounds.
         got = rule(**nth_business_day(1)).resolve(period, open_calendar)
-        assert got == date(2026, 8, 3)  # counting from the 1st of August
+        assert got == date(2026, 8, 26)
+        assert period.contains(got)
 
     def test_month_offset_moves_a_whole_period(self, period, open_calendar):
         # 前月末営業日 = the previous *period's* closing 運用日. The period here is
@@ -510,17 +513,57 @@ class TestBaseDayIntegration:
         got = rule(**BUSINESS_DAY_RULES["前月末営業日"]).resolve(period, open_calendar)
         assert got == date(2026, 8, 25)
 
-    def test_scope_period_binds_to_the_anchor_month(self, period, open_calendar):
-        # 第3営業日 refers to the month 基準日 is in -- August, the anchor month --
-        # so it resolves to the 3rd working day of *August*, even though that is
-        # before the period opens on 08-26. 開始年月 names the month the rule
-        # anchors in, and the anchor is legitimately in it.
+    def test_scope_period_binds_to_the_period(self, period, open_calendar):
+        # 第3営業日 is the 3rd 運用日 of the period the 基準日 opens. The period is
+        # 2026-08-26..09-25, so the answer is 08-28 (26, 27, 28) -- inside the
+        # window -- not 08-05 in the calendar month.
         # nth_business_day() already supplies a scope, so override the value
         # rather than passing it twice.
         got = replace(ScheduleRule(**nth_business_day(3)), scope=Scope.PERIOD).resolve(
             period, open_calendar
         )
-        assert got == date(2026, 8, 5)
+        assert got == date(2026, 8, 28)
+        assert period.contains(got)
+
+    def test_every_operating_count_stays_inside_the_period(self, period, open_calendar):
+        # The regression in one assertion: no 運用日 count may answer with a date
+        # outside the period, which is what the calendar-month origin produced.
+        for n in range(1, 16):
+            got = rule(**nth_business_day(n)).resolve(period, open_calendar)
+            assert period.contains(got), (n, got)
+
+    def test_closed_day_count_follows_the_same_origin(self, period):
+        # 休業日 shares the origin, so it has to move with it. With closures on
+        # 08-27 and 08-28 only, the period's 1st 休業日 is 08-27 -- a closed day,
+        # which is the whole point of 休業日, so 振り替え must be off or the rule
+        # would substitute away from the answer it just found.
+        closed = SyntheticCalendar({date(2026, 8, 27), date(2026, 8, 28)})
+        got = rule(
+            kind=Kind.CLOSED,
+            start_day=StartDay.DAY,
+            day=1,
+            substitution=Substitution.RUN_ANYWAY,
+        ).resolve(period, closed)
+        assert got == date(2026, 8, 27)
+        assert period.contains(got)
+
+    def test_closed_day_count_does_not_start_from_the_first_of_the_month(self, period):
+        # The old calendar-month origin would have found 08-01 (a Saturday) and
+        # answered a date before the period.
+        closed = SyntheticCalendar({date(2026, 8, 27), date(2026, 8, 28)})
+        got = rule(
+            kind=Kind.CLOSED,
+            start_day=StartDay.DAY,
+            day=1,
+            substitution=Substitution.RUN_ANYWAY,
+        ).resolve(period, closed)
+        assert got != date(2026, 8, 1)
+
+    def test_absolute_day_count_is_not_moved_by_the_period(self, period, open_calendar):
+        # The axis the fix deliberately leaves alone: 絶対日 is named against the
+        # calendar month, so 第3日 is 08-03 even though the period opens 08-26.
+        got = rule(kind=Kind.ABSOLUTE, start_day=StartDay.DAY, day=3).resolve(period, open_calendar)
+        assert got == date(2026, 8, 3)
 
 
 # --------------------------------------------------------------------------- #
