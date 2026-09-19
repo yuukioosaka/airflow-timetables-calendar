@@ -1,20 +1,28 @@
 """Airflow plugin registering :class:`~.timetable.CalendarTimetable`.
 
-Custom timetables must be reachable when a DAG is deserialized, which happens in
-the scheduler, DAG processor, triggerer and worker. Registering the class through
-an :class:`~airflow.plugins_manager.AirflowPlugin` is what makes those components
-able to resolve it, and the ``airflow.plugins`` entry point in ``pyproject.toml``
-means installing the package is enough to register it -- nothing has to be copied
-into a ``plugins/`` directory.
+Serialization needs two separate things, and getting only one of them is the
+trap this module exists to avoid:
+
+1. **Registration in the plugin registry.** ``AirflowPlugin.timetables`` below
+   puts the class in ``plugins_manager.get_timetables_plugins()``. The encoder
+   looks the class up there by import path and raises
+   ``TimetableNotRegistered`` if it is absent -- on *every* supported Airflow,
+   so this is the part that actually matters.
+
+2. **A serializer for the payload.** From Airflow 3.2 there is also a
+   singledispatch hook (``_Serializer.serialize_timetable``) that must be taught
+   about the class; see :func:`_register_serializer`.
+
+The ``airflow.plugins`` entry point in ``pyproject.toml`` wires both up on
+``pip install``, so nothing has to be copied into a ``plugins/`` directory.
 
 ``CalendarTimetable`` derives from the *core* ``CronTriggerTimetable`` rather than
-the SDK's ``BaseTimetable`` (see its docstring for why), and the core serializer
-only dispatches on types it knows about. So this module also teaches the
-serializer how to encode it.
+the SDK's ``BaseTimetable`` (see its docstring for why).
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
 
 from airflow.plugins_manager import AirflowPlugin
@@ -24,33 +32,74 @@ from .timetable import CalendarTimetable
 log = logging.getLogger(__name__)
 
 
-def _register_serializer() -> bool:
-    """Teach the core DAG serializer how to encode ``CalendarTimetable``.
+def _import_encoders():
+    """Return ``airflow.serialization.encoders``, or None when it is absent.
 
-    ``_Serializer.serialize_timetable`` is a ``functools.singledispatchmethod``, so
-    the object to register against is its ``.dispatcher``. Calling ``.register`` on
-    the descriptor itself appears to work but only sets a useless attribute on the
-    descriptor and never takes effect -- a silent failure that surfaces much later
-    as an unreadable DAG.
-
-    The whole thing reaches into a private attribute, so it is guarded: on a future
-    Airflow where this shape changes, we want a loud log line rather than an
-    ``AttributeError`` during plugin import that would take the scheduler down.
-
-    :return: True if the serializer was registered.
+    Airflow 3.0 and 3.1 have no such module, so absence is an expected outcome
+    rather than an error. Isolated in a helper because it is the single place
+    this package touches a private Airflow module, which keeps the tests able to
+    substitute a fake without reaching into the registration logic.
     """
     try:
-        from airflow.serialization.encoders import _Serializer
+        return importlib.import_module("airflow.serialization.encoders")
+    except ImportError:
+        return None
 
-        descriptor = _Serializer.__dict__["serialize_timetable"]
-        dispatcher = descriptor.dispatcher
-    except (ImportError, AttributeError, KeyError) as exc:
+
+def _register_serializer() -> bool:
+    """Teach the DAG serializer how to encode ``CalendarTimetable``.
+
+    The timetable type itself is only reachable through the plugin registry
+    (``AirflowPlugin.timetables``), which is the mechanism that exists on every
+    supported Airflow. What this function adds is the *payload* encoder, which
+    only became pluggable in Airflow 3.2:
+
+        Airflow 3.0, 3.1   no ``airflow.serialization.encoders`` module. The
+                           encoder calls ``timetable.serialize()`` for a
+                           registered class, and that is enough, so this returns
+                           True having done nothing.
+        Airflow 3.2+       ``_Serializer`` holds ``serialize_timetable`` as a
+                           ``functools.singledispatchmethod``, so a class the
+                           serializer has never seen needs a registered variant.
+
+    The hook is located by scanning the class ``__dict__`` rather than by
+    importing a private name, because the private name is precisely what moved
+    between releases. Note that ``getattr`` cannot be used for this: reading a
+    ``singledispatchmethod`` through the class gives the underlying plain
+    function, which has no ``.dispatcher``. The descriptor has to come out of
+    ``__dict__``.
+
+    :return: True if serialization is supported on this Airflow.
+    """
+    encoders = _import_encoders()
+    if encoders is None:
+        # Airflow 3.0/3.1: no dispatch hook to register with. `serialize()` is
+        # called directly for a plugin-registered class, which is all we need.
+        log.debug(
+            "airflow.serialization.encoders is absent (Airflow < 3.2); "
+            "relying on plugin registration and CalendarTimetable.serialize()"
+        )
+        return True
+
+    serializer_cls = getattr(encoders, "_Serializer", None)
+    if serializer_cls is None:
         log.error(
-            "Could not register CalendarTimetable with the DAG serializer (%s: %s). "
-            "DAGs using this timetable will fail to serialize. This usually means "
-            "the installed Airflow version is unsupported; please report it.",
-            type(exc).__name__,
-            exc,
+            "airflow.serialization.encoders has no _Serializer; the DAG "
+            "serializer has been reshaped. DAGs using this timetable will fail "
+            "to serialize. This usually means the installed Airflow version is "
+            "unsupported; please report it."
+        )
+        return False
+
+    descriptor = serializer_cls.__dict__.get("serialize_timetable")
+    dispatcher = getattr(descriptor, "dispatcher", None)
+    if dispatcher is None:
+        log.error(
+            "_Serializer.serialize_timetable is no longer a singledispatchmethod "
+            "(found %r). DAGs using this timetable will fail to serialize. "
+            "This usually means the installed Airflow version is unsupported; "
+            "please report it.",
+            type(descriptor).__name__,
         )
         return False
 

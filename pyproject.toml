@@ -39,7 +39,10 @@ classifiers = [
 ]
 
 dependencies = [
-    "apache-airflow>=3.0,<4",
+    # 3.2 is the real floor, not 3.0: the singledispatch hook that lets a custom
+    # timetable supply its own serializer (`_Serializer.serialize_timetable` in
+    # `airflow.serialization.encoders`) does not exist before it. CI proves this.
+    "apache-airflow>=3.2,<4",
     "holidays>=0.60",
 ]
 

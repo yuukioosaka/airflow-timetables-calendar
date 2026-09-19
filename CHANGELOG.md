@@ -37,6 +37,15 @@ and breaking one again turns it into a failure.
 
 Initial release.
 
+Requires **apache-airflow >= 3.2**. That floor is not arbitrary: a custom
+timetable needs both registration in the plugin registry *and*, from 3.2, a
+serializer registered against `_Serializer.serialize_timetable` in
+`airflow.serialization.encoders`. On 3.0 and 3.1 that module does not exist and
+the encoder raises `TimetableNotRegistered` before reaching
+`timetable.serialize()`, so a DAG using this timetable cannot be serialized. The
+CI matrix found this; `plugin.py` handles the absence explicitly so the failure
+is a clear log line rather than a traceback at import.
+
 ### Added
 
 - `CalendarTimetable`, an Airflow timetable that fires on working days only,
