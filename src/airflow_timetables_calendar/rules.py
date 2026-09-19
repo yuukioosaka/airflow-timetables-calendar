@@ -12,7 +12,8 @@ reproduced.
 
 The classical model
 -------------------
-The classical model derives an execution date from three things (種別 / 開始年月 / 開始日):
+The classical model derives an execution date from 種別 (kind) and 開始日
+(start day) together, optionally bounded below by 開始年月:
 
 * **基準日 (base date)** -- a calendar defines where a "month" starts, e.g. base
   date 26 means Aug 26..Sep 25 is treated as "August".
@@ -23,7 +24,9 @@ The classical model derives an execution date from three things (種別 / 開始
 
   ===========  ==========================================================
   ``ABSOLUTE`` 暦日: plain calendar date, month starts on the 1st.
-  ``RELATIVE`` 相対日: counted from the base date, calendar days.
+  ``RELATIVE`` 相対日: counted from the 基準日, in calendar days. Note that
+                ``base_day=1`` makes this identical to ``ABSOLUTE``, because
+                the 基準日 is then the 1st.
   ``OPERATING`` 運用日: counted from the base date, but only 運用日
                 (working days). This is how 第n営業日 works.
   ``CLOSED``   休業日: counted from the base date, only 休業日.
@@ -446,10 +449,19 @@ class ScheduleRule:
     def _anchor_day(self, period: Period, cal: WorkingDayCalendar) -> date | None:
         """The date named by 種別 + 開始日, before holiday substitution.
 
-        The day-based kinds (日付指定 / 月末指定 / 曜日指定) are all described
-        relative to *the period's anchor month*, so they take the month that the
-        基準日 falls in -- not ``period.start``, which is the period's first day and
-        equals the 基準日 only in the trivial ``base_day=1`` case.
+        Two different origins are in play, and the 種別 decides which:
+
+        * 絶対日 (日付指定) and 曜日指定 are named against *the calendar
+          month*, so they take the month the 基準日 falls in -- 「暦の上での
+          日付（月初めは1日）」. That is ``period.anchor_month``, not
+          ``period.start``, which equals the 基準日 only when ``base_day=1``.
+        * 相対日 (日付指定) is named against *the 基準日 itself*, so it counts
+          from ``period.start`` -- 「基準日として指定した日付から起算した
+          日付で，「何日」という形で日付を指定する」. With ``base_day=1`` the
+          基準日 is the 1st, which is why the two readings only diverge once
+          a ``base_day`` is set.
+        * 運用日 / 休業日 (日付指定) are *counts* within the period; the
+          off-by-one shift lives in those methods, not here.
         """
         month = period.anchor_month
         if self.kind is Kind.REGISTERED:
@@ -463,13 +475,13 @@ class ScheduleRule:
         if self.start_day is StartDay.MONTH_END:
             return self._from_month_end(month, cal)
 
-        # StartDay.DAY: for absolute/relative days this is simply ``day``.
-        # For the working/closed-day kinds it is a *count* within the period, so
-        # the off-by-one shift lives in those methods, not here.
         if self.kind is Kind.ABSOLUTE:
             return _clamp_day(month.year, month.month, self.day)
         if self.kind is Kind.RELATIVE:
-            return month + timedelta(days=self.day - 1)
+            # 相対日 counts calendar days from the 基準日, so the origin is
+            # ``period.start`` rather than ``period.anchor_month``. 何日 is
+            # 1-based (the same convention 絶対日 uses), so day=1 IS the 基準日.
+            return period.start + timedelta(days=self.day - 1)
         if self.kind is Kind.OPERATING:
             return self._nth_working_day_in_period(month, self.day, cal)
         if self.kind is Kind.CLOSED:

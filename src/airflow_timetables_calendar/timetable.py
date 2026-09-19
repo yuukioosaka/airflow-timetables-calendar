@@ -26,7 +26,12 @@ Usage::
     CalendarTimetable(calendar_id="NONE", hour=9, exclude_dates=["2026-12-29"])
 
     # rules from the classical model instead of "every working day"
-    from airflow_timetables_calendar import simple_rule, nth_business_day
+    from airflow_timetables_calendar import (
+        Kind,
+        nth_business_day,
+        simple_rule,
+        verbose_rule,
+    )
 
     CalendarTimetable(calendar_id="JP", rules=["月末営業日"], hour=21)
     CalendarTimetable(calendar_id="JP", rules=[verbose_rule(kind=Kind.ABSOLUTE, day=15)], hour=21)

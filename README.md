@@ -57,14 +57,20 @@ subdivision calendars) and, with the `exchanges` extra,
 [`pandas_market_calendars`](https://pypi.org/project/pandas_market_calendars/)
 (200+ exchanges, including maintenance and special closures).
 
-A few codes exist in both registries — `TSE` is both a `holidays`
-financial-market alias and a `pandas_market_calendars` name, and they disagree
-about 2026-01-02. Use a prefix to be explicit:
+A bare code is resolved against `holidays` first, then the exchange registry.
+The two registries sometimes use different codes for the same market, so use
+a prefix when you mean a specific one:
 
 ```python
-CalendarTimetable(calendar_id="exchange:TSE")   # force pandas_market_calendars
-CalendarTimetable(calendar_id="country:JP")     # force holidays
+CalendarTimetable(calendar_id="country:JP")      # force holidays (country)
+CalendarTimetable(calendar_id="exchange:XTKS")   # Tokyo Stock Exchange, mcal
+CalendarTimetable(calendar_id="exchange:XLON")   # London Stock Exchange, mcal
 ```
+
+Exchange ids are the `pandas_market_calendars` names, which are usually the
+MIC code rather than the familiar abbreviation — `XTKS`, not `TSE`. Check
+`available_exchange_calendars()` when in doubt; an unknown id raises
+`UnknownCalendarError` at DAG-parse time rather than scheduling silently.
 
 ## Business-day rules
 
@@ -119,11 +125,12 @@ the classical model:
 | Concept | Meaning |
 |---|---|
 | 基準日 (base date) | where a "month" starts. `base_day=26` makes 2026-08-26..2026-09-25 the "August" business month |
-| 種別 (kind) | what the offset counts: `ABSOLUTE` 暦日, `RELATIVE` 相対日, `OPERATING` 運用日 (working days → 第n営業日), `CLOSED` 休業日, `REGISTERED` 登録日 |
+| 基準時刻 (base time) | how the classical model rolls a *business date* over, so that 08:00..next-day 07:59 is one business day and a run at "25:00" still belongs to the previous date. **Not modelled here**: `CalendarTimetable` uses a plain wall-clock `hour`/`minute`, so the range is 0–23 and a 48時間制 schedule cannot be expressed. Use the `timezone` to place the run, and see [Not modelled](#not-modelled) |
+| 種別 (kind) | what the offset counts: `ABSOLUTE` 暦日 (a plain calendar date), `RELATIVE` 相対日 (calendar days from the 基準日 — identical to `ABSOLUTE` when `base_day=1`), `OPERATING` 運用日 (working days → 第n営業日), `CLOSED` 休業日, `REGISTERED` 登録日 |
 | 開始日 (start day) | `DAY` 日付指定, `MONTH_END` 月末指定, `WEEKDAY` 曜日指定 |
 | 休業日の振り替え | what to do when the day is closed: `SKIP` 実行しない, `PREVIOUS` 前の運用日, `NEXT` 次の運用日, `RUN_ANYWAY` 振り替えなし |
 | 起算スケジュール | a final `n` working-day (`OPERATING`) or calendar-day (`CALENDAR`) adjustment |
-| 猶予日数 (grace days) | the maximum distance a shift may travel. **Beyond it, that occurrence produces no run at all** — matching the classical model, this is not an error |
+| 猶予日数 (grace days) | the maximum distance a shift may travel, counted in *calendar* days. **Beyond it, that occurrence produces no run at all** — matching the classical model, this is not an error. The window also bounds how far a rule may reach, so a wider 猶予日数 costs more work in `matches()`. **`grace_days=0` means "use the default", not "zero tolerance"** — omit it unless you need a tighter window |
 
 `simple_rule()` is the compact spelling of the same model, taken from the rule
 text `＋登録、毎月（日付）、1日、休止日 後シフト、相対 4` (月初から5営業日目).
@@ -189,6 +196,32 @@ its own calendar object straight in.
 Custom timetables have to be resolvable when a DAG is deserialized, in every
 Airflow component. Installing the package is enough: an `airflow.plugins` entry
 point registers the timetable and teaches the DAG serializer how to encode it.
+
+## Not modelled
+
+The rule vocabulary is a *model* of the classical behaviour, not a complete
+reimplementation of any one product. These parts are deliberately absent, and
+the README describes them only so that the rest makes sense:
+
+- **基準時刻 / 48時間制.** A business date rolling over at, say, 08:00, and the
+  0:00–47:59 time range that lets a job run at "25:00" and still belong to the
+  previous date. `CalendarTimetable` takes a plain `hour`/`minute` in a
+  `timezone`, so the range is 0–23. A run that must be dated to the previous
+  business day is not expressible; use 起算 (`business_days_before`) or a
+  different `hour` instead.
+- **有効期日 (a rule validity end date).** 開始年月 bounds a rule from *below*
+  only. There is no upper bound, and therefore no interaction between the
+  猶予日数 window and an expiry — the classical model lets the window override
+  the expiry, which cannot arise here.
+- **登録日 (the registration date).** `Kind.REGISTERED` resolves to the period's
+  own start, which is a stand-in for "when this was registered" rather than a
+  real registration timestamp. It is not wired to any Airflow run state.
+- **振り替え猶予日数 bounds.** The classical model documents a 1–31 day window.
+  `grace_days` is not range-checked, and `grace_days=0` selects the default
+  window rather than a zero-day one.
+
+If you need any of these, they are the natural next things to add — see
+`rules.py`, where each is a self-contained stage.
 
 ## Scope and compatibility
 

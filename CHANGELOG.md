@@ -33,8 +33,9 @@ mistake.
 - **Forward `相対` no longer double-counts closed days.** The 休止日 shift and the
   起算スケジュール offset are now carried by a *single* walk instead of two
   chained ones, so a closed day inside the span is crossed once.
-  `simple_rule(day=10, shift="next", relative=1)` gives 2026-09-15 (used to give
-  2026-09-17). The shift step itself is not one of the counted steps.
+  `simple_rule(day=10, shift="next", relative=1)` gives 2026-09-11 — the 10th is
+  open, so 起算 moves one 運用日 forward from it. The shift step itself is not one
+  of the counted steps.
 - **`前月末営業日` fires again.** This one was unrelated to the anchor kind:
   `ScheduleRule.matches()` only consulted the period *containing* the queried
   day, so a rule whose run belongs to the *following* period — which is exactly
@@ -103,8 +104,9 @@ the round above because the only `month_offset` coverage was `-1` with
   (`tests/test_rule_fixes.py::TestMatchesFindsTheProducingEpoch`)
 - **曜日指定 no longer leaves the month it names.** `_nth_weekday` computed the
   anchor as `first + 7 * (day - 1)` with no bound, so any `day` beyond the month's
-  last occurrence walked into the following month — `day=5` in February 2026 gave
-  2026-03-01, and `day=28` gave 2026-08-09. 曜日指定 means "the Nth <weekday> of
+  last occurrence walked into the following month — for a Sunday weekday in
+  February 2026, `day=5` gave 2026-03-01 and `day=28` gave 2026-08-09.
+  曜日指定 means "the Nth <weekday> of
   the month", so an occurrence that does not exist now names the anchor month's
   last day, matching how the day-based 開始日 forms already clamp an out-of-range
   `day`. (`tests/test_rule_fixes.py::TestWeekdayStartDayStaysInTheMonth`)
@@ -113,6 +115,15 @@ the round above because the only `month_offset` coverage was `-1` with
   with fewer than the requested 休業日 produced a date in a neighbouring month
   instead of producing no run. `_scan()` takes an optional `floor` for this.
 
+- **`Kind.RELATIVE` (相対日) now counts from the 基準日.** It previously counted
+  from `period.anchor_month`, the *first day of the month the 基準日 falls in*,
+  which is exactly what 絶対日 does — so `RELATIVE` and `ABSOLUTE` were the same
+  rule under two names, and only diverged when a `base_day` was set. 相対日 is
+  「基準日として指定した日付から起算した日付」, so it counts from the 基準日
+  itself (`period.start`), 1-based like 絶対日. With `base_day=26`, `day=1` is now
+  2026-08-26 rather than an October date, and with the default `base_day=1` the
+  two readings coincide, which is why nothing else moved.
+  (`tests/test_rules.py::TestAbsoluteAndRelativeDays`)
 ### Changed
 
 - `Scope.PERIOD` (開始年月) is now a bound on **the months a rule applies from**
@@ -124,6 +135,16 @@ the round above because the only `month_offset` coverage was `-1` with
   deliberately skipped once `month_offset` has moved the anchor. A movement may
   carry the result forward or backward out of the period, which is what 振り替え
   and 起算 are for. `Scope.FREE` is unchanged.
+- The 種別 now decides which origin a day-based 開始日 is measured from, since
+  the classical model uses two. 絶対日 and 曜日指定 are named against **the
+  calendar month**, so they keep using the month the 基準日 falls in; 相対日 is
+  named against **the 基準日 itself** and now uses `period.start`. `base_day=1`
+  makes the 基準日 the 1st and the two coincide, so this only surfaces with a
+  `base_day`.
+- The 開始年月 documentation is now explicit that it is a *lower* bound only.
+  There is no 有効期日 (validity end date), and therefore no interaction between
+  it and the 猶予日数 window — the classical model lets a grace window override an
+  expiry, which cannot arise here. See README "Not modelled".
 
 ### Added
 

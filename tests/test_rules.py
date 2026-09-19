@@ -707,3 +707,78 @@ def _september_2026() -> list[date]:
         days.append(day)
         day += timedelta(days=1)
     return days
+
+
+class TestRelativeDayCountsFromTheBaseDate:
+    """相対日 counts calendar days from the 基準日, not from the anchor month.
+
+    絶対日 and 相対日 both take a 日付指定, but they are measured from different
+    origins, so they must diverge as soon as a ``base_day`` is set. With the
+    default ``base_day=1`` the 基準日 *is* the 1st and the two coincide, which is
+    why this only surfaces with a base date.
+    """
+
+    def test_day_one_is_the_base_date_itself(self, calendar):
+        # The 基準日 for [2026-08-26..2026-09-25] is 2026-08-26.
+        period = period_for(date(2026, 9, 1), base_day=26)
+        assert period.start == date(2026, 8, 26)
+        got = rule(kind=Kind.RELATIVE, day=1).resolve(period, calendar)
+        assert got == date(2026, 8, 26)
+
+    def test_counts_forward_from_the_base_date(self, calendar):
+        period = period_for(date(2026, 9, 1), base_day=26)
+        got = rule(kind=Kind.RELATIVE, day=10).resolve(period, calendar)
+        assert got == date(2026, 9, 4)  # 08-26 + 9 days
+
+    def test_it_differs_from_absolute_once_a_base_day_is_set(self, calendar):
+        period = period_for(date(2026, 9, 1), base_day=15)
+        absolute = rule(kind=Kind.ABSOLUTE, day=5).resolve(period, calendar)
+        relative = rule(kind=Kind.RELATIVE, day=5).resolve(period, calendar)
+        assert absolute == date(2026, 8, 5)  # 5th of the anchor calendar month
+        assert relative == date(2026, 8, 19)  # 基準日 08-15 + 4 days
+
+    def test_the_two_agree_when_base_day_is_one(self, calendar):
+        # base_day=1 puts the 基準日 on the 1st, so both readings are the Nth.
+        period = period_for(date(2026, 9, 1))
+        for day in (1, 10, 15, 30):
+            absolute = rule(kind=Kind.ABSOLUTE, day=day).resolve(period, calendar)
+            relative = rule(kind=Kind.RELATIVE, day=day).resolve(period, calendar)
+            assert absolute == relative, day
+
+    def test_a_relative_day_may_leave_the_anchor_month(self, calendar):
+        # 基準日 08-26 + 9 days is in September, while the anchor month is August.
+        period = period_for(date(2026, 9, 1), base_day=26)
+        assert period.anchor_month == date(2026, 8, 1)
+        got = rule(kind=Kind.RELATIVE, day=10).resolve(period, calendar)
+        assert got.month == 9
+
+    def test_a_closed_relative_day_is_substituted(self, calendar):
+        # 2026-09-05 is a Saturday in the synthetic calendar.
+        period = period_for(date(2026, 9, 1), base_day=26)
+        got = rule(kind=Kind.RELATIVE, day=11).resolve(period, calendar)
+        assert got is None  # 09-05 is closed and the default policy is SKIP
+        got = rule(kind=Kind.RELATIVE, day=11, substitution=Substitution.RUN_ANYWAY).resolve(
+            period, calendar
+        )
+        assert got == date(2026, 9, 5)
+
+    @pytest.mark.parametrize("base_day", [1, 5, 15, 26, 31])
+    def test_matches_agrees_with_resolve(self, base_day, calendar):
+        """The 基準日-based anchor must survive the matches()/resolve() split.
+
+        ``matches()`` recovers the epoch that produced a day, so a rule whose
+        anchor origin moved is a prime candidate for a silent never-fires.
+        """
+        rule_obj = rule(kind=Kind.RELATIVE, day=10)
+        day = date(2025, 1, 1)
+        while day < date(2027, 1, 1):
+            produced = False
+            for shift in range(-3, 4):
+                period = period_for(day, base_day)
+                for _ in range(abs(shift)):
+                    period = period.prev() if shift < 0 else period.next()
+                if rule_obj.resolve(period, calendar) == day:
+                    produced = True
+                    break
+            assert rule_obj.matches(day, calendar, base_day) == produced, day
+            day += timedelta(days=1)
