@@ -164,6 +164,19 @@ the round above because the only `month_offset` coverage was `-1` with
 
 ### Added
 
+- **Every preset now has an English name as well as its Japanese one.** The
+  Japanese spellings stay canonical -- they are what the source definitions are
+  written in -- but `last_business_day`, `every_business_day` and the other seven
+  are accepted anywhere a preset name is accepted, and build an identical
+  `ScheduleRule`. `PRESET_ALIASES` holds the English names and `PRESET_LOOKUP`
+  maps every accepted spelling to its canonical key, so a UI can offer both. An
+  unknown name lists the whole vocabulary.
+  (`tests/test_rules.py::TestPresetAliases`)
+- `README.JP.md`, a Japanese translation of the README. `README.md` is now
+  entirely in English, with the Japanese vocabulary retained only as terminology
+  the API itself uses (preset names, enum labels) and as the industry terms the
+  concepts are named after. `pyproject.toml` still ships `README.md` to PyPI and
+  the Japanese file links back to it.
 - `ScheduleRule.shift_direction` records which way the 休止日 shift travels
   (`+1` 後シフト, `-1` 前シフト, `0` unset). `simple_rule()` sets it so that a closed
   anchor settles the way its own 休止日 rule says even though the substitution

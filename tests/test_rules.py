@@ -15,6 +15,9 @@ import pytest
 
 from airflow_timetables_calendar import (
     BUSINESS_DAY_RULES,
+    PRESET_ALIASES,
+    PRESET_LOOKUP,
+    CalendarTimetable,
     Count,
     Frequency,
     Kind,
@@ -523,6 +526,41 @@ class TestBaseDayIntegration:
 # --------------------------------------------------------------------------- #
 # Presets and builders
 # --------------------------------------------------------------------------- #
+
+
+class TestPresetAliases:
+    """Every preset is reachable by its Japanese name and by its English one."""
+
+    def test_every_preset_has_an_english_alias(self):
+        assert set(PRESET_ALIASES.values()) == set(BUSINESS_DAY_RULES)
+
+    def test_english_names_are_unique(self):
+        assert len(set(PRESET_ALIASES)) == len(PRESET_ALIASES)
+        # No English name may shadow a canonical Japanese key.
+        assert not set(PRESET_ALIASES) & set(BUSINESS_DAY_RULES)
+
+    def test_lookup_covers_both_vocabularies(self):
+        assert set(PRESET_LOOKUP) == set(BUSINESS_DAY_RULES) | set(PRESET_ALIASES)
+        for name, canonical in PRESET_LOOKUP.items():
+            assert canonical in BUSINESS_DAY_RULES, name
+
+    @pytest.mark.parametrize("alias,canonical", sorted(PRESET_ALIASES.items()))
+    def test_alias_builds_the_same_rule(self, alias, canonical):
+        assert build_rules([alias]) == build_rules([canonical]), alias
+
+    @pytest.mark.parametrize("alias", sorted(PRESET_ALIASES))
+    def test_aliases_are_accepted_by_the_timetable(self, alias):
+        # The lookup happens in build_rules, which is what CalendarTimetable
+        # calls, so the English names work as a DAG's `rules` too.
+        tt = CalendarTimetable(calendar_id="NONE", hour=21, rules=[alias])
+        assert tt.rules
+
+    def test_unknown_preset_lists_both_vocabularies(self):
+        with pytest.raises(KeyError) as err:
+            build_rules(["月末"])
+        message = str(err.value)
+        assert "月末営業日" in message  # canonical
+        assert "last_business_day" in message  # alias
 
 
 class TestStartDayOriginFollowsTheKind:

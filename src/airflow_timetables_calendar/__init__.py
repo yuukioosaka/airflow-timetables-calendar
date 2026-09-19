@@ -16,12 +16,14 @@ Two layers, usable together or separately:
 Quick start::
 
     from airflow import DAG
-    from airflow_timetables_calendar import CalendarTimetable, nth_business_day
+    from airflow_timetables_calendar import CalendarTimetable, nth_business_day_from_end
 
     with DAG(
         dag_id="month_end_report",
         # 21:00 JST on the last working day of each month.
-        schedule=CalendarTimetable(calendar_id="JP", hour=21, rules=nth_business_day(1)),
+        schedule=CalendarTimetable(
+            calendar_id="JP", hour=21, rules=[nth_business_day_from_end(0)]
+        ),
         ...
     ):
         ...
@@ -43,6 +45,8 @@ from .calendars import (
 )
 from .rules import (
     BUSINESS_DAY_RULES,
+    PRESET_ALIASES,
+    PRESET_LOOKUP,
     Count,
     Frequency,
     Kind,
@@ -91,6 +95,8 @@ __all__ = [
     "available_exchange_calendars",
     # rules -- Airflow-free
     "BUSINESS_DAY_RULES",
+    "PRESET_ALIASES",
+    "PRESET_LOOKUP",
     "Count",
     "Frequency",
     "Kind",

@@ -2,7 +2,7 @@
 
 Calendar-driven [Airflow](https://airflow.apache.org/) timetables, plus a
 business-day rule engine using the vocabulary of classical Japanese job
-schedulers (種別 / 開始日 / 振り替え / 起算 / 猶予日数).
+schedulers (kind / start day / substitution / offset / grace days).
 
 The point of this package is that "run on the last working day of the month" is
 not something a cron expression can say, and hand-rolling the arithmetic for every
@@ -17,6 +17,8 @@ pip install airflow-timetables-calendar
 # exchange calendars (Tokyo Stock Exchange, NYSE, LSE, ...) are opt-in
 pip install "airflow-timetables-calendar[exchanges]"
 ```
+
+Japanese documentation: [`README.JP.md`](README.JP.md).
 
 ## Quick start
 
@@ -88,10 +90,11 @@ from airflow_timetables_calendar import (
     Kind,
 )
 
-# Preset names
-CalendarTimetable(calendar_id="JP", hour=21, rules=["月末営業日"])
+# Preset names -- English or Japanese, both work
+CalendarTimetable(calendar_id="JP", hour=21, rules=["last_business_day"])
+CalendarTimetable(calendar_id="JP", hour=21, rules=["月末営業日"])  # same rule
 
-# 第10営業日 and 月末営業日
+# The 10th working day, and the month's last working day
 CalendarTimetable(
     calendar_id="JP",
     hour=21,
@@ -99,23 +102,48 @@ CalendarTimetable(
 )
 
 # The explicit form: argument names map 1:1 onto
-# 種別 / 開始日 / 振り替え / 起算, so an existing definition can be transcribed directly.
+# kind / start day / substitution / offset, so an existing definition can be
+# transcribed directly.
 CalendarTimetable(
     calendar_id="JP",
     hour=21,
     rules=[verbose_rule(kind=Kind.ABSOLUTE, day=15, substitution="next", grace_days=3)],
 )
 
-# The compact form: one line per schedule, the way 休止日 / 相対 are normally written
+# The compact form: one line per schedule, the way the 休止日/相対 notation is
+# normally written.
 CalendarTimetable(
     calendar_id="JP",
     hour=21,
-    rules=[simple_rule(day="L", shift="prev", relative=-2)],  # 月末の3営業日前
+    rules=[simple_rule(day="L", shift="prev", relative=-2)],  # 3 working days before month end
 )
 ```
 
-Built-in presets: 第1営業日, 月初営業日, 月末営業日, 当月末営業日, 前月末営業日,
-月末前営業日, 翌営業日, 前営業日, 毎営業日.
+Every preset has both a Japanese name and an English one, and both are accepted
+anywhere a preset name is accepted. The Japanese names are the canonical keys,
+because they are what the source definitions are written in; use the English
+names when your own vocabulary is English. The two spellings build the exact
+same `ScheduleRule`.
+
+| English | Japanese | Meaning |
+|---|---|---|
+| `first_business_day` | `第1営業日` | the month's 1st working day |
+| `first_business_day_of_month` | `月初営業日` | the month's opening working day |
+| `last_business_day` | `月末営業日` | the month's last working day |
+| `last_business_day_of_month` | `当月末営業日` | the current month's last working day |
+| `last_business_day_of_previous_month` | `前月末営業日` | the *previous* month's last working day |
+| `business_day_before_month_end` | `月末前営業日` | the working day before the month's last |
+| `next_business_day` | `翌営業日` | the next working day |
+| `previous_business_day` | `前営業日` | the previous working day |
+| `every_business_day` | `毎営業日` | every working day |
+
+```python
+CalendarTimetable(calendar_id="JP", hour=21, rules=["last_business_day"])
+```
+
+`PRESET_LOOKUP` maps every accepted spelling to its canonical key and
+`PRESET_ALIASES` holds just the English ones, so a tool can offer both. An
+unknown name raises at DAG-parse time and lists every accepted spelling.
 
 ### The model
 
@@ -124,35 +152,36 @@ the classical model:
 
 | Concept | Meaning |
 |---|---|
-| 基準日 (base date) | where a "month" starts. `base_day=26` makes 2026-08-26..2026-09-25 the "August" business month |
-| 基準時刻 (base time) | how the classical model rolls a *business date* over, so that 08:00..next-day 07:59 is one business day and a run at "25:00" still belongs to the previous date. **Not modelled here**: `CalendarTimetable` uses a plain wall-clock `hour`/`minute`, so the range is 0–23 and a 48時間制 schedule cannot be expressed. Use the `timezone` to place the run, and see [Not modelled](#not-modelled) |
-| 種別 (kind) | what the offset counts: `ABSOLUTE` 暦日 (a plain calendar date), `RELATIVE` 相対日 (calendar days from the 基準日 — identical to `ABSOLUTE` when `base_day=1`), `OPERATING` 運用日 (working days → 第n営業日), `CLOSED` 休業日, `REGISTERED` 登録日 |
-| 開始日 (start day) | `DAY` 日付指定, `MONTH_END` 月末指定, `WEEKDAY` 曜日指定. What the resulting day is *measured from* depends on the 種別 — see [Where a 開始日 is measured from](#where-a-%E9%96%8B%E5%A7%8B%E6%97%A5-is-measured-from) |
-| 休業日の振り替え | what to do when the day is closed: `SKIP` 実行しない, `PREVIOUS` 前の運用日, `NEXT` 次の運用日, `RUN_ANYWAY` 振り替えなし |
-| 起算スケジュール | a final `n` working-day (`OPERATING`) or calendar-day (`CALENDAR`) adjustment |
-| 猶予日数 (grace days) | the maximum distance a shift may travel, counted in *calendar* days. **Beyond it, that occurrence produces no run at all** — matching the classical model, this is not an error. The window also bounds how far a rule may reach, so a wider 猶予日数 costs more work in `matches()`. **`grace_days=0` means "use the default", not "zero tolerance"** — omit it unless you need a tighter window |
+| base date (基準日) | where a "month" starts. `base_day=26` makes 2026-08-26..2026-09-25 the "August" business month |
+| base time (基準時刻) | how the classical model rolls a *business date* over, so that 08:00..next-day 07:59 is one business day and a run at "25:00" still belongs to the previous date. **Not modelled here**: `CalendarTimetable` uses a plain wall-clock `hour`/`minute`, so the range is 0–23 and a 48-hour-clock schedule cannot be expressed. Use the `timezone` to place the run, and see [Not modelled](#not-modelled) |
+| kind (種別) | what the offset counts: `ABSOLUTE` calendar date, `RELATIVE` calendar days from the base date (identical to `ABSOLUTE` when `base_day=1`), `OPERATING` working days (→ "the Nth working day"), `CLOSED` closed days, `REGISTERED` the registration date |
+| start day (開始日) | `DAY` a date of the month, `MONTH_END` days before month end, `WEEKDAY` the Nth weekday. What the resulting day is *measured from* depends on the kind — see [Where a start day is measured from](#where-a-start-day-is-measured-from) |
+| substitution (休業日の振り替え) | what to do when the day is closed: `SKIP` do not run, `PREVIOUS` the previous working day, `NEXT` the next working day, `RUN_ANYWAY` do not substitute |
+| offset schedule (起算スケジュール) | a final `n` working-day (`OPERATING`) or calendar-day (`CALENDAR`) adjustment |
+| grace days (猶予日数) | the maximum distance a shift may travel, counted in *calendar* days. **Beyond it, that occurrence produces no run at all** — matching the classical model, this is not an error. The window also bounds how far a rule may reach, so a wider grace window costs more work in `matches()`. **`grace_days=0` means "use the default", not "zero tolerance"** — omit it unless you need a tighter window |
 
 `simple_rule()` is the compact spelling of the same model, taken from the rule
-text `＋登録、毎月（日付）、1日、休止日 後シフト、相対 4` (月初から5営業日目).
-`相対 n` counts `n` working days from the *settled* anchor, with the anchor itself
-counting as 0, so `相対 4` on `1日` is the 5th working day and `相対 -2` on `L日`
-is 月末の3営業日前. The 休止日 shift settles the anchor first and `相対` then
-counts from that settled day, in `相対`'s own direction. `verbose_rule()` instead
-applies 起算 to the anchor the rule names, without a preceding substitution.
+text `＋登録、毎月（日付）、1日、休止日 後シフト、相対 4` ("the 5th working day
+from the start of the month"). `相対 n` counts `n` working days from the *settled*
+anchor, with the anchor itself counting as 0, so `相対 4` on day 1 is the 5th
+working day and `相対 -2` on `L日` is 3 working days before month end. The 休止日
+shift settles the anchor first and `相対` then counts from that settled day, in
+`相対`'s own direction. `verbose_rule()` instead applies the offset to the anchor
+the rule names, without a preceding substitution.
 
 Note that only *one* stage is allowed to walk: `simple_rule()` keeps the
 substitution from moving the date and lets the offset carry the whole distance.
 Chaining the two would make every closed day in the span cost two steps.
 
-Because both `相対` and 振り替え are movements, their result may cross the end of
-the month — `day="L", shift="prev", relative=1` genuinely means "the first
-working day after month end". 開始年月 bounds the month the rule *anchors* in, so
-it rejects a date that walks back past it, but not one that walks forward out of
-it. The same applies with a `base_day`, where the end-of-month run lands in the
-following month by design.
+Because both `相対` and substitution are movements, their result may cross the end
+of the month — `day="L", shift="prev", relative=1` genuinely means "the first
+working day after month end". The start year-month (開始年月) bounds the month the
+rule *anchors* in, so it rejects a date that walks back past it, but not one that
+walks forward out of it. The same applies with a `base_day`, where the
+end-of-month run lands in the following month by design.
 
 ```python
-# 月末業務日報: last working day of each business month starting on the 26th
+# Last working day of each business month starting on the 26th
 CalendarTimetable(
     calendar_id="JP",
     hour=21,
@@ -161,41 +190,42 @@ CalendarTimetable(
 )
 ```
 
-### Where a 開始日 is measured from
+### Where a start day is measured from
 
-The 種別 and the 開始日 are not independent: which origin a day is counted from
-is decided by the 種別, and the two axes are easy to conflate because they
-collapse to the same answer whenever `base_day=1`.
+The kind and the start day are not independent: which origin a day is counted from
+is decided by the kind, and the two axes are easy to conflate because they collapse
+to the same answer whenever `base_day=1`.
 
-| 種別 | 日付指定 | 月末指定 | 曜日指定 |
+| kind | a date of the month | days before month end | the Nth weekday |
 |---|---|---|---|
-| `ABSOLUTE` 絶対日 | the **calendar month** | the **calendar month**'s last day | the **calendar month**'s weeks |
-| `RELATIVE` 相対日 | the **基準日** (1-based) | the **period**'s last day | weeks counted **from the 基準日** |
-| `OPERATING` 運用日 | the period's Nth 運用日 | the **period**'s last 運用日 | — |
-| `CLOSED` 休業日 | the period's Nth 休業日 | the **period**'s last 休業日 | — |
+| `ABSOLUTE` | the **calendar month** | the **calendar month**'s last day | the **calendar month**'s weeks |
+| `RELATIVE` | the **base date** (1-based) | the **period**'s last day | weeks counted **from the base date** |
+| `OPERATING` | the period's Nth working day | the **period**'s last working day | — |
+| `CLOSED` | the period's Nth closed day | the **period**'s last closed day | — |
 
-"Period" means the 基準日-defined business month. So with `base_day=26`, the
+"Period" means the base-date-defined business month. So with `base_day=26`, the
 period opening 2026-08-26 closes on **2026-09-25**, and:
 
 ```python
-# 月末営業日: the last working day of the *period* -> 2026-09-25
+# Last working day of the *period* -> 2026-09-25
 CalendarTimetable(calendar_id="JP", hour=21, base_day=26,
                   rules=[nth_business_day_from_end(0)])
 
-# 絶対日 + 月末指定 keeps the calendar reading -> 2026-08-31
+# ABSOLUTE + MONTH_END keeps the calendar reading -> 2026-08-31
 CalendarTimetable(calendar_id="JP", hour=21, base_day=26,
                   rules=[verbose_rule(kind=Kind.ABSOLUTE,
                                       start_day=StartDay.MONTH_END, day=0)])
 ```
 
-The 曜日指定 origin has a matching split: 絶対日 counts weeks from the 1st of
-the calendar month, while 相対日 counts them from the 基準日, so with
-`base_day=26` "the 1st Monday" is 2026-08-31 under 相対日 but 2026-08-03 under
-絶対日. An occurrence that does not exist within the period names the period's
+The weekday form has a matching split: `ABSOLUTE` counts weeks from the 1st of the
+calendar month, while `RELATIVE` counts them from the base date, so with
+`base_day=26` "the 1st Monday" is 2026-08-31 under `RELATIVE` but 2026-08-03 under
+`ABSOLUTE`. An occurrence that does not exist within the period names the period's
 last day rather than walking into the next one.
 
 Set `base_day=1` (the default) and both readings are the same thing, because the
-基準日 *is* the 1st. That is why this only matters once a 基準日 is configured.
+base date *is* the 1st. That is why this only matters once a base date is
+configured.
 
 ### Rules without Airflow
 
@@ -239,26 +269,27 @@ The rule vocabulary is a *model* of the classical behaviour, not a complete
 reimplementation of any one product. These parts are deliberately absent, and
 the README describes them only so that the rest makes sense:
 
-- **基準時刻 / 48時間制.** A business date rolling over at, say, 08:00, and the
-  0:00–47:59 time range that lets a job run at "25:00" and still belong to the
+- **base time / 48-hour clock.** A business date rolling over at, say, 08:00, and
+  the 0:00–47:59 time range that lets a job run at "25:00" and still belong to the
   previous date. `CalendarTimetable` takes a plain `hour`/`minute` in a
   `timezone`, so the range is 0–23. A run that must be dated to the previous
-  business day is not expressible; use 起算 (`business_days_before`) or a
-  different `hour` instead.
-- **有効期日 (a rule validity end date).** 開始年月 bounds a rule from *below*
-  only. There is no upper bound, and therefore no interaction between the
-  猶予日数 window and an expiry — the classical model lets the window override
-  the expiry, which cannot arise here.
-- **登録日 (the registration date).** `Kind.REGISTERED` resolves to the period's
-  own start, which is a stand-in for "when this was registered" rather than a
-  real registration timestamp. It is not wired to any Airflow run state.
-- **振り替え猶予日数 bounds.** The classical model documents a 1–31 day window.
-  `grace_days` is not range-checked, and `grace_days=0` selects the default
-  window rather than a zero-day one.
-- **曜日指定 for 運用日 / 休業日.** The specification's 開始日 table defines
-  曜日指定 only for 絶対日 and 相対日, so the two 運用日 / 休業日 combinations are
-  undefined. They are accepted here and resolve against the calendar month,
-  which is a local choice rather than a documented behaviour.
+  business day is not expressible; use the offset schedule
+  (`business_days_before`) or a different `hour` instead.
+- **validity end date (有効期日).** The start year-month bounds a rule from
+  *below* only. There is no upper bound, and therefore no interaction between the
+  grace window and an expiry — the classical model lets the window override the
+  expiry, which cannot arise here.
+- **registration date (登録日).** `Kind.REGISTERED` resolves to the period's own
+  start, which is a stand-in for "when this was registered" rather than a real
+  registration timestamp. It is not wired to any Airflow run state.
+- **substitution grace bounds.** The classical model documents a 1–31 day window.
+  `grace_days` is not range-checked, and `grace_days=0` selects the default window
+  rather than a zero-day one.
+- **the Nth weekday for working/closed days.** The specification's start-day table
+  defines the weekday form only for `ABSOLUTE` and `RELATIVE`, so the two
+  working-day / closed-day combinations are undefined. They are accepted here and
+  resolve against the calendar month, which is a local choice rather than a
+  documented behaviour.
 
 If you need any of these, they are the natural next things to add — see
 `rules.py`, where each is a self-contained stage.
@@ -281,8 +312,8 @@ MIT. See [`LICENSE`](LICENSE).
 ## Sources
 
 The rule vocabulary and its edge cases follow the conventions that classical
-Japanese job schedulers share — 種別 / 開始日 / 休業日の振り替え / 起算スケジュール /
-猶予日数, plus the compact 休止日・相対 form. That vocabulary is an industry
+Japanese job schedulers share — kind / start day / substitution / offset schedule /
+grace days, plus the compact 休止日・相対 notation. That vocabulary is an industry
 convention rather than a public standard, so the implementation is a faithful
 *model* of the documented behaviour, not a byte-compatible parser of any
 particular product's configuration files. No vendor documentation or product

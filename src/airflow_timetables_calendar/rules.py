@@ -999,6 +999,13 @@ def verbose_rule(
 #: Named presets for the schedules that come up over and over in Japanese
 #: back-office work. Each maps to the construct that produces it, so the
 #: presets double as documentation.
+#:
+#: Every preset also has a stable English name, registered in
+#: :data:`PRESET_ALIASES`. The Japanese names are the canonical keys because
+#: they are what the source definitions are written in, but the English names
+#: are the ones to use when the caller's own vocabulary is English -- both are
+#: accepted anywhere a preset name is accepted, and both produce an identical
+#: :class:`ScheduleRule`.
 BUSINESS_DAY_RULES: dict[str, dict] = {
     # 月初営業日 / 第n営業日 (anchor-inclusive: 第1営業日 == 月初営業日)
     "第1営業日": verbose_rule(
@@ -1066,6 +1073,27 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
     "毎営業日": verbose_rule(frequency=Frequency.DAILY),
 }
 
+#: English spelling for each preset. Kept separate from
+#: :data:`BUSINESS_DAY_RULES` so the canonical table stays a direct transcription
+#: of the Japanese vocabulary, and so a preset cannot accidentally exist in one
+#: language only -- :func:`build_rules` resolves through this table, and
+#: ``tests/test_rules.py`` asserts the two views cover the same rules.
+PRESET_ALIASES: dict[str, str] = {
+    "first_business_day": "第1営業日",
+    "first_business_day_of_month": "月初営業日",
+    "last_business_day": "月末営業日",
+    "last_business_day_of_month": "当月末営業日",
+    "last_business_day_of_previous_month": "前月末営業日",
+    "business_day_before_month_end": "月末前営業日",
+    "next_business_day": "翌営業日",
+    "previous_business_day": "前営業日",
+    "every_business_day": "毎営業日",
+}
+
+#: Every accepted preset name, Japanese and English, mapped to its canonical
+#: Japanese key.
+PRESET_LOOKUP: dict[str, str] = {**{name: name for name in BUSINESS_DAY_RULES}, **PRESET_ALIASES}
+
 
 def nth_business_day(n: int) -> dict:
     """第n営業日 from the start of the month (n=1 is 月初営業日)."""
@@ -1124,10 +1152,11 @@ def build_rules(items: Iterable[dict | ScheduleRule | str]) -> list[ScheduleRule
         if isinstance(item, ScheduleRule):
             rules.append(item)
         elif isinstance(item, str):
-            if item not in BUSINESS_DAY_RULES:
-                known = ", ".join(sorted(BUSINESS_DAY_RULES))
+            canonical = PRESET_LOOKUP.get(item)
+            if canonical is None:
+                known = ", ".join(sorted(PRESET_LOOKUP))
                 raise KeyError(f"unknown preset {item!r}; known presets: {known}")
-            rules.append(ScheduleRule(**BUSINESS_DAY_RULES[item]))
+            rules.append(ScheduleRule(**BUSINESS_DAY_RULES[canonical]))
         elif isinstance(item, dict):
             rules.append(ScheduleRule(**item))
         else:
