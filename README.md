@@ -1,15 +1,15 @@
 # airflow-timetables-calendar
 
 Calendar-driven [Airflow](https://airflow.apache.org/) timetables, plus a
-business-day rule engine using the vocabulary of classical Japanese job
+business-day rule engine using the vocabulary of classical enterprise job
 schedulers (kind / start day / substitution / offset / grace days).
 
 The point of this package is that "run on the last working day of the month" is
 not something a cron expression can say, and hand-rolling the arithmetic for every
 region, exchange and holiday rule is how schedulers go quietly wrong. So instead
 of reimplementing calendars, this delegates to libraries that already maintain the
-data, and layers the scheduling vocabulary Japanese enterprise job schedulers have
-used for decades on top.
+data, and layers the scheduling vocabulary enterprise job schedulers have used for
+decades on top.
 
 ```bash
 pip install airflow-timetables-calendar
@@ -90,9 +90,8 @@ from airflow_timetables_calendar import (
     Kind,
 )
 
-# Preset names -- English or Japanese, both work
+# Preset names
 CalendarTimetable(calendar_id="JP", hour=21, rules=["last_business_day"])
-CalendarTimetable(calendar_id="JP", hour=21, rules=["月末営業日"])  # same rule
 
 # The 10th working day, and the month's last working day
 CalendarTimetable(
@@ -110,8 +109,8 @@ CalendarTimetable(
     rules=[verbose_rule(kind=Kind.ABSOLUTE, day=15, substitution="next", grace_days=3)],
 )
 
-# The compact form: one line per schedule, the way the 休止日/相対 notation is
-# normally written.
+# The compact form: one line per schedule, the way the shift/relative notation
+# is normally written.
 CalendarTimetable(
     calendar_id="JP",
     hour=21,
@@ -119,31 +118,24 @@ CalendarTimetable(
 )
 ```
 
-Every preset has both a Japanese name and an English one, and both are accepted
-anywhere a preset name is accepted. The Japanese names are the canonical keys,
-because they are what the source definitions are written in; use the English
-names when your own vocabulary is English. The two spellings build the exact
-same `ScheduleRule`.
+| Preset | Meaning |
+|---|---|
+| `first_business_day` | the month's 1st working day |
+| `first_business_day_of_month` | the month's opening working day |
+| `last_business_day` | the month's last working day |
+| `last_business_day_of_month` | the current month's last working day |
+| `last_business_day_of_previous_month` | the *previous* month's last working day |
+| `business_day_before_month_end` | the working day before the month's last |
+| `next_business_day` | the next working day |
+| `previous_business_day` | the previous working day |
+| `every_business_day` | every working day |
 
-| English | Japanese | Meaning |
-|---|---|---|
-| `first_business_day` | `第1営業日` | the month's 1st working day |
-| `first_business_day_of_month` | `月初営業日` | the month's opening working day |
-| `last_business_day` | `月末営業日` | the month's last working day |
-| `last_business_day_of_month` | `当月末営業日` | the current month's last working day |
-| `last_business_day_of_previous_month` | `前月末営業日` | the *previous* month's last working day |
-| `business_day_before_month_end` | `月末前営業日` | the working day before the month's last |
-| `next_business_day` | `翌営業日` | the next working day |
-| `previous_business_day` | `前営業日` | the previous working day |
-| `every_business_day` | `毎営業日` | every working day |
-
-```python
-CalendarTimetable(calendar_id="JP", hour=21, rules=["last_business_day"])
-```
-
-`PRESET_LOOKUP` maps every accepted spelling to its canonical key and
-`PRESET_ALIASES` holds just the English ones, so a tool can offer both. An
-unknown name raises at DAG-parse time and lists every accepted spelling.
+Each preset also has a native-language spelling, which is the canonical key
+because it is what the source definitions are written in. `PRESET_ALIASES` holds
+the English names and `PRESET_LOOKUP` maps every accepted spelling to its
+canonical key, so a tool can offer both. An unknown name raises at DAG-parse time
+and lists every accepted spelling. See [`README.JP.md`](README.JP.md) for the
+native table.
 
 ### The model
 
@@ -152,33 +144,32 @@ the classical model:
 
 | Concept | Meaning |
 |---|---|
-| base date (基準日) | where a "month" starts. `base_day=26` makes 2026-08-26..2026-09-25 the "August" business month |
-| base time (基準時刻) | how the classical model rolls a *business date* over, so that 08:00..next-day 07:59 is one business day and a run at "25:00" still belongs to the previous date. **Not modelled here**: `CalendarTimetable` uses a plain wall-clock `hour`/`minute`, so the range is 0–23 and a 48-hour-clock schedule cannot be expressed. Use the `timezone` to place the run, and see [Not modelled](#not-modelled) |
-| kind (種別) | what the offset counts: `ABSOLUTE` calendar date, `RELATIVE` calendar days from the base date (identical to `ABSOLUTE` when `base_day=1`), `OPERATING` working days (→ "the Nth working day"), `CLOSED` closed days, `REGISTERED` the registration date |
-| start day (開始日) | `DAY` a date of the month, `MONTH_END` days before month end, `WEEKDAY` the Nth weekday. What the resulting day is *measured from* depends on the kind — see [Where a start day is measured from](#where-a-start-day-is-measured-from) |
-| substitution (休業日の振り替え) | what to do when the day is closed: `SKIP` do not run, `PREVIOUS` the previous working day, `NEXT` the next working day, `RUN_ANYWAY` do not substitute |
-| offset schedule (起算スケジュール) | a final `n` working-day (`OPERATING`) or calendar-day (`CALENDAR`) adjustment |
-| grace days (猶予日数) | the maximum distance a shift may travel, counted in *calendar* days. **Beyond it, that occurrence produces no run at all** — matching the classical model, this is not an error. The window also bounds how far a rule may reach, so a wider grace window costs more work in `matches()`. **`grace_days=0` means "use the default", not "zero tolerance"** — omit it unless you need a tighter window |
+| base date | where a "month" starts. `base_day=26` makes 2026-08-26..2026-09-25 the "August" business month |
+| base time | how the classical model rolls a *business date* over, so that 08:00..next-day 07:59 is one business day and a run at "25:00" still belongs to the previous date. **Not modelled here**: `CalendarTimetable` uses a plain wall-clock `hour`/`minute`, so the range is 0–23 and a 48-hour-clock schedule cannot be expressed. Use the `timezone` to place the run, and see [Not modelled](#not-modelled) |
+| kind | what the offset counts: `ABSOLUTE` calendar date, `RELATIVE` calendar days from the base date (identical to `ABSOLUTE` when `base_day=1`), `OPERATING` working days (→ "the Nth working day"), `CLOSED` closed days, `REGISTERED` the registration date |
+| start day | `DAY` a date of the month, `MONTH_END` days before month end, `WEEKDAY` the Nth weekday. What the resulting day is *measured from* depends on the kind — see [Where a start day is measured from](#where-a-start-day-is-measured-from) |
+| substitution | what to do when the day is closed: `SKIP` do not run, `PREVIOUS` the previous working day, `NEXT` the next working day, `RUN_ANYWAY` do not substitute |
+| offset schedule | a final `n` working-day (`OPERATING`) or calendar-day (`CALENDAR`) adjustment |
+| grace days | the maximum distance a shift may travel, counted in *calendar* days. **Beyond it, that occurrence produces no run at all** — matching the classical model, this is not an error. The window also bounds how far a rule may reach, so a wider grace window costs more work in `matches()`. **`grace_days=0` means "use the default", not "zero tolerance"** — omit it unless you need a tighter window |
 
-`simple_rule()` is the compact spelling of the same model, taken from the rule
-text `＋登録、毎月（日付）、1日、休止日 後シフト、相対 4` ("the 5th working day
-from the start of the month"). `相対 n` counts `n` working days from the *settled*
-anchor, with the anchor itself counting as 0, so `相対 4` on day 1 is the 5th
-working day and `相対 -2` on `L日` is 3 working days before month end. The 休止日
-shift settles the anchor first and `相対` then counts from that settled day, in
-`相対`'s own direction. `verbose_rule()` instead applies the offset to the anchor
-the rule names, without a preceding substitution.
+`simple_rule()` is the compact spelling of the same model. `relative n` counts `n`
+working days from the *settled* anchor, with the anchor itself counting as 0, so
+`relative=4` on day 1 is the 5th working day and `relative=-2` on `L` is 3 working
+days before month end. The shift settles the anchor first and `relative` then
+counts from that settled day, in `relative`'s own direction. `verbose_rule()`
+instead applies the offset to the anchor the rule names, without a preceding
+substitution.
 
 Note that only *one* stage is allowed to walk: `simple_rule()` keeps the
 substitution from moving the date and lets the offset carry the whole distance.
 Chaining the two would make every closed day in the span cost two steps.
 
-Because both `相対` and substitution are movements, their result may cross the end
-of the month — `day="L", shift="prev", relative=1` genuinely means "the first
-working day after month end". The start year-month (開始年月) bounds the month the
-rule *anchors* in, so it rejects a date that walks back past it, but not one that
-walks forward out of it. The same applies with a `base_day`, where the
-end-of-month run lands in the following month by design.
+Because both `relative` and substitution are movements, their result may cross the
+end of the month — `day="L", shift="prev", relative=1` genuinely means "the first
+working day after month end". The start year-month bounds the month the rule
+*anchors* in, so it rejects a date that walks back past it, but not one that walks
+forward out of it. The same applies with a `base_day`, where the end-of-month run
+lands in the following month by design.
 
 ```python
 # Last working day of each business month starting on the 26th
@@ -275,12 +266,12 @@ the README describes them only so that the rest makes sense:
   `timezone`, so the range is 0–23. A run that must be dated to the previous
   business day is not expressible; use the offset schedule
   (`business_days_before`) or a different `hour` instead.
-- **validity end date (有効期日).** The start year-month bounds a rule from
-  *below* only. There is no upper bound, and therefore no interaction between the
-  grace window and an expiry — the classical model lets the window override the
-  expiry, which cannot arise here.
-- **registration date (登録日).** `Kind.REGISTERED` resolves to the period's own
-  start, which is a stand-in for "when this was registered" rather than a real
+- **a rule validity end date.** The start year-month bounds a rule from *below*
+  only. There is no upper bound, and therefore no interaction between the grace
+  window and an expiry — the classical model lets the window override the expiry,
+  which cannot arise here.
+- **the registration date.** `Kind.REGISTERED` resolves to the period's own start,
+  which is a stand-in for "when this was registered" rather than a real
   registration timestamp. It is not wired to any Airflow run state.
 - **substitution grace bounds.** The classical model documents a 1–31 day window.
   `grace_days` is not range-checked, and `grace_days=0` selects the default window
@@ -312,9 +303,9 @@ MIT. See [`LICENSE`](LICENSE).
 ## Sources
 
 The rule vocabulary and its edge cases follow the conventions that classical
-Japanese job schedulers share — kind / start day / substitution / offset schedule /
-grace days, plus the compact 休止日・相対 notation. That vocabulary is an industry
-convention rather than a public standard, so the implementation is a faithful
-*model* of the documented behaviour, not a byte-compatible parser of any
-particular product's configuration files. No vendor documentation or product
-name is reproduced here.
+enterprise job schedulers share — kind / start day / substitution / offset
+schedule / grace days, plus the compact shift-and-relative notation. That
+vocabulary is an industry convention rather than a public standard, so the
+implementation is a faithful *model* of the documented behaviour, not a
+byte-compatible parser of any particular product's configuration files. No vendor
+documentation or product name is reproduced here.
