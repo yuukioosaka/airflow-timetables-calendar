@@ -993,7 +993,7 @@ def verbose_rule(
 
 
 # --------------------------------------------------------------------------- #
-# Common Japanese business-day phrases (第n営業日 / 月末 / 前営業日 ...)
+# Common Japanese business-day phrases (第n営業日 / 月末 / 月初 ...)
 # --------------------------------------------------------------------------- #
 
 #: Named presets for the schedules that come up over and over in Japanese
@@ -1052,7 +1052,7 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
         frequency=Frequency.MONTHLY,
         scope=Scope.FREE,
     ),
-    # 月末営業日の前営業日 / 翌営業日 (relative to the anchor, per 起算)
+    # 月末営業日の前営業日 (relative to the anchor, per 起算)
     "月末前営業日": verbose_rule(
         kind=Kind.OPERATING,
         start_day=StartDay.MONTH_END,
@@ -1061,14 +1061,6 @@ BUSINESS_DAY_RULES: dict[str, dict] = {
         count=Count.OPERATING,
         offset_grace_days=30,
         frequency=Frequency.MONTHLY,
-    ),
-    "翌営業日": verbose_rule(
-        substitution=Substitution.NEXT,
-        grace_days=30,
-    ),
-    "前営業日": verbose_rule(
-        substitution=Substitution.PREVIOUS,
-        grace_days=30,
     ),
     "毎営業日": verbose_rule(frequency=Frequency.DAILY),
 }
@@ -1085,8 +1077,6 @@ PRESET_ALIASES: dict[str, str] = {
     "last_business_day_of_month": "当月末営業日",
     "last_business_day_of_previous_month": "前月末営業日",
     "business_day_before_month_end": "月末前営業日",
-    "next_business_day": "翌営業日",
-    "previous_business_day": "前営業日",
     "every_business_day": "毎営業日",
 }
 

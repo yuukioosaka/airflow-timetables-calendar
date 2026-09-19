@@ -174,11 +174,23 @@ the round above because the only `month_offset` coverage was `-1` with
   it and the 猶予日数 window — the classical model lets a grace window override an
   expiry, which cannot arise here. See README "Not modelled".
 
+### Removed
+
+- The `翌営業日` / `next_business_day` and `前営業日` / `previous_business_day`
+  presets are gone, in both spellings. Both were ambiguous in a way the rest of
+  the vocabulary is not: with the default anchor (the 1st of the month) they
+  silently meant "the working day before/after the 1st", which is the *previous
+  month's* last working day and the 1st itself -- not "the next/previous working
+  day from today" as the name reads. 月末前営業日 names the month-end case
+  explicitly, and 起算 (`offset` with `count=Count.OPERATING`) covers the general
+  `n営業日前/後` case, so no expressive power is lost. `BUSINESS_DAY_RULES` now
+  holds seven presets and `PRESET_ALIASES` seven aliases, still in 1:1
+  correspondence.
 
 ### Added
 - **Every preset now has an English name as well as its Japanese one.** The
   Japanese spellings stay canonical -- they are what the source definitions are
-  written in -- but `last_business_day`, `every_business_day` and the other seven
+  written in -- but `last_business_day`, `every_business_day` and the other five
   are accepted anywhere a preset name is accepted, and build an identical
   `ScheduleRule`. `PRESET_ALIASES` holds the English names and `PRESET_LOOKUP`
   maps every accepted spelling to its canonical key, so a UI can offer both. An
@@ -207,7 +219,7 @@ the round above because the only `month_offset` coverage was `-1` with
   曜日指定), 休業日の振り替え with 振り替え猶予日数, 起算スケジュール with 起算猶予日数,
   開始年月 scoping and 処理サイクル.
 - `BUSINESS_DAY_RULES` presets: 第1営業日, 月初営業日, 月末営業日, 当月末営業日,
-  前月末営業日, 月末前営業日, 翌営業日, 前営業日, 毎営業日.
+  前月末営業日, 月末前営業日, 毎営業日.
 - Constructors `nth_business_day`, `nth_business_day_from_end`, `verbose_rule`,
   `simple_rule`, `business_days_before`, `business_days_after`,
   `calendar_days_before`, `calendar_days_after`, and the helpers `build_rules`,

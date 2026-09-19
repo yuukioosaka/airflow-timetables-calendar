@@ -126,8 +126,6 @@ CalendarTimetable(
 | `last_business_day_of_month` | the current month's last working day |
 | `last_business_day_of_previous_month` | the *previous* month's last working day |
 | `business_day_before_month_end` | the working day before the month's last |
-| `next_business_day` | the next working day |
-| `previous_business_day` | the previous working day |
 | `every_business_day` | every working day |
 
 Each preset also has a native-language spelling, which is the canonical key
