@@ -79,6 +79,55 @@ being answered as "not a holiday". Treating a failed query as a working day
 would put a run on a date the calendar could not vouch for, which is the silent
 wrongness this package exists to avoid.
 
+## Running on closed days
+
+Every timetable so far ran on the days a calendar says are *open*. Passing
+`run_on="closed"` runs on the days the same calendar says are **closed** —
+weekends, public holidays, exchange closures — with no second calendar to
+describe.
+
+```python
+# Weekends and Japanese public holidays
+CalendarTimetable(calendar_id="JP", hour=9, run_on="closed")
+
+# The days the Tokyo Stock Exchange is shut
+CalendarTimetable(calendar_id="XTKS", hour=9, run_on="closed")
+
+# Just Saturday and Sunday
+CalendarTimetable(calendar_id="NONE", hour=9, run_on="closed")
+```
+
+| `calendar_id` | `run_on="open"` (default) | `run_on="closed"` |
+|---|---|---|
+| `JP` | business days | weekends + JP holidays |
+| `XTKS` | trading days | exchange closures |
+| `NONE` | Mon–Fri | Sat + Sun |
+
+It is the exact negation of the open-day test, applied to the finished verdict
+rather than to the calendar alone. That one rule decides everything:
+
+- **`rules` follow it.** The rule engine reads the calendar only through that
+  verdict, so `every_business_day` means *every closed day*, a month-end rule
+  resolves to the month's last closed day, and holiday substitution moves a run
+  *off* an open day. No rule needs to know the mode exists.
+- **`include_dates` / `exclude_dates` invert with it.** A date forced open
+  (`include_dates`) is not a closed day, so it does **not** run under
+  `"closed"`; a date forced closed (`exclude_dates`) does.
+
+```python
+# Runs on every closed day, except the one explicitly reopened for the open mode.
+CalendarTimetable(
+    calendar_id="JP",
+    hour=9,
+    run_on="closed",
+    exclude_dates=["2026-12-31"],   # this closed day DOES run
+    include_dates=["2026-12-30"],   # this closed day does NOT run
+)
+```
+
+The 48-hour clock is unaffected: rules are still evaluated against the business
+date, so `hour=25` runs on a closed business date at 01:00 the next morning.
+
 ## Business-day rules
 
 `rules` takes preset names, `verbose_rule()` / `simple_rule()` kwargs dicts,

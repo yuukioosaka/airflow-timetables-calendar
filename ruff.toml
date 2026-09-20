@@ -9,6 +9,12 @@ line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
 
+# `ruff format` rewrites fenced Python inside Markdown, so it would reflow the
+# READMEs and the changelog's code samples to its own alignment. Declared here
+# rather than passed as `--exclude` on every invocation, so a bare
+# `ruff format .` -- in CI, in a pre-commit hook, or by hand -- leaves them alone.
+exclude = ["README.md", "README.JP.md", "CHANGELOG.md"]
+
 [lint]
 select = [
     "E",   # pycodestyle errors

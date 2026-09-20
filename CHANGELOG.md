@@ -5,6 +5,26 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-20
+
+### Added
+
+- **`CalendarTimetable(..., run_on="closed")` runs on the days the calendar
+  closes** — weekends, public holidays and, for an exchange calendar, exchange
+  closures. It is the exact negation of the open-day test, applied to the
+  finished verdict, so nothing else had to change: `rules`, `include_dates` and
+  `exclude_dates` all read the calendar through the same `is_working_day`, and
+  each follows the flag. `every_business_day` therefore means *every closed day*,
+  a month-end rule resolves to the month's last closed day, and holiday
+  substitution moves a run *off* an open day — with no rule aware that a mode
+  exists. Payloads written before this release carry no `run_on` key and read
+  back as `"open"`, so stored DAGs keep their existing schedule.
+
+```python
+CalendarTimetable(calendar_id="JP", hour=9, run_on="closed")     # weekends + JP holidays
+CalendarTimetable(calendar_id="XTKS", hour=9, run_on="closed")   # exchange closures
+```
+
 ## [0.5.0] - 2026-09-20
 
 ### Fixed

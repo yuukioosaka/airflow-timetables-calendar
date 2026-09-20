@@ -22,6 +22,10 @@ Usage::
     # No holidays at all: plain Mon-Fri
     CalendarTimetable(calendar_id="NONE", hour=9)
 
+    # The opposite side of the calendar: run on the days it would normally skip
+    CalendarTimetable(calendar_id="JP", hour=9, run_on="closed")    # weekends + JP holidays
+    CalendarTimetable(calendar_id="XTKS", hour=9, run_on="closed")  # exchange closures
+
     # Escape hatch: your own explicit list of non-working days
     CalendarTimetable(calendar_id="NONE", hour=9, exclude_dates=["2026-12-29"])
 
@@ -54,7 +58,15 @@ force ``pandas_market_calendars`` over the ``holidays`` financial calendar.
 :param timezone: Timezone the hour/minute are interpreted in.
 :param exclude_dates: Extra ``YYYY-MM-DD`` dates to skip.
 :param include_dates: Extra ``YYYY-MM-DD`` dates to run on, even if the calendar
-    would skip them (useful for one-off out-of-hours runs).
+    would skip them (useful for one-off out-of-hours runs). Under
+    ``run_on="closed"`` these invert along with everything else.
+:param run_on: ``"open"`` (default) runs on the calendar's working days;
+    ``"closed"`` runs on the days the same calendar closes -- weekends, public
+    holidays, exchange closures. It is the exact negation of the open-day test,
+    so every ``rules`` entry follows it: 毎営業日 means every closed day,
+    第n営業日 counts closed days, and 休業日の振り替え moves a run off an open day.
+    ``exclude_dates`` and ``include_dates`` invert with it, so a date forced
+    open is never a run under ``"closed"`` and a date forced closed always is.
 :param rules: schedule rules (see :mod:`.rules`).
     Accepts preset names, ``verbose_rule()`` / ``simple_rule()`` kwargs dicts, or
     ``ScheduleRule`` objects, in ascending priority. **Empty or None means "run on
@@ -68,6 +80,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from airflow.timetables.trigger import CronTriggerTimetable
 from croniter import croniter
@@ -82,7 +95,16 @@ from .calendars import (
 )
 from .rules import ScheduleRule, build_rules, resolve_rules
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from typing import Literal
+
+    #: Which side of the calendar a timetable runs on.
+    RunOn = Literal["open", "closed"]
+
 DEFAULT_TIMEZONE = "Asia/Tokyo"
+
+#: Accepted values of the ``run_on`` parameter.
+_RUN_ON_VALUES = frozenset({"open", "closed"})
 
 # Bound the holiday-stepping loops so a bad calendar can never hang the scheduler.
 _MAX_STEPS = 400
@@ -156,6 +178,20 @@ class CalendarTimetable(CronTriggerTimetable):
     on the next. The negative half is the mirror image, for a job that has to
     finish before midnight and so starts the previous evening.
 
+    ``run_on="closed"`` swaps which side of the calendar produces runs. The
+    calendar is the same one; only the question asked of it changes, from "is
+    this day open?" to "is this day closed?". That covers weekend and holiday
+    batch windows, and for an exchange calendar it covers the days the market is
+    shut, without a second calendar having to be described:
+
+    ==================  ==========================  ==========================
+    ``calendar_id``     ``run_on="open"``           ``run_on="closed"``
+    ==================  ==========================  ==========================
+    ``JP``              business days               weekends + JP holidays
+    ``XTKS``            trading days                exchange closures
+    ``NONE``            Mon-Fri                     Sat + Sun
+    ==================  ==========================  ==========================
+
     This derives from the *core* ``CronTriggerTimetable`` rather than the SDK
     one. The SDK base (``airflow.sdk.bases.timetable.BaseTimetable``) is missing
     several attributes that core code reads unconditionally -- ``partitioned``
@@ -175,6 +211,7 @@ class CalendarTimetable(CronTriggerTimetable):
         include_dates: list[str] | None = None,
         rules: list[dict | ScheduleRule | str] | None = None,
         base_day: int = 1,
+        run_on: RunOn = "open",
         *,
         rules_are_stored: bool = False,
     ) -> None:
@@ -200,6 +237,9 @@ class CalendarTimetable(CronTriggerTimetable):
             raise ValueError(f"base_day must be an int, got {type(base_day).__name__} {base_day!r}")
         if not 1 <= base_day <= 31:
             raise ValueError(f"base_day must be between 1 and 31, got {base_day!r}")
+        if run_on not in _RUN_ON_VALUES:
+            allowed = " or ".join(repr(v) for v in sorted(_RUN_ON_VALUES))
+            raise ValueError(f"run_on must be {allowed}, got {run_on!r}")
 
         self._hour = hour
         self._minute = minute
@@ -230,6 +270,7 @@ class CalendarTimetable(CronTriggerTimetable):
         # ``deserialize`` passes it, for payloads an earlier version wrote.
         self._rules = tuple(build_rules(rules, stored=rules_are_stored)) if rules else ()
         self._base_day = base_day
+        self._run_on_closed = run_on == "closed"
 
     # ------------------------------------------------------------------ config
 
@@ -271,6 +312,11 @@ class CalendarTimetable(CronTriggerTimetable):
         return self._base_day
 
     @property
+    def run_on(self) -> RunOn:
+        """Which side of the calendar produces runs: ``"open"`` or ``"closed"``."""
+        return "closed" if self._run_on_closed else "open"
+
+    @property
     def summary(self) -> str:
         base = f"{self._expression} (calendar: {self.calendar_id}"
         if self._hour != self._hour_of_day:
@@ -279,6 +325,10 @@ class CalendarTimetable(CronTriggerTimetable):
             base += f", hour: {self._hour}"
         if self._base_day != 1:
             base += f", base day: {self._base_day}"
+        if self._run_on_closed:
+            # Two timetables on the same calendar and expression are otherwise
+            # indistinguishable in the UI while running on disjoint days.
+            base += ", run on: closed"
         if self._rules:
             base += f", rules: {len(self._rules)}"
         return base + ")"
@@ -296,6 +346,9 @@ class CalendarTimetable(CronTriggerTimetable):
             include_dates=data.get("include_dates"),
             rules=data.get("rules"),
             base_day=data.get("base_day", 1),
+            # Absent in payloads written before this parameter existed, so the
+            # default keeps them reading as they always meant: the open days.
+            run_on=data.get("run_on", "open"),
             # Reading stored data rather than accepting configuration: a payload
             # an earlier version wrote may carry the vocabulary this one rejects.
             rules_are_stored=True,
@@ -311,6 +364,7 @@ class CalendarTimetable(CronTriggerTimetable):
             "include_dates": sorted(d.isoformat() for d in self.include_dates),
             "rules": [_rule_to_dict(r) for r in self._rules],
             "base_day": self._base_day,
+            "run_on": self.run_on,
         }
 
     # ------------------------------------------------------- holiday decision
@@ -337,6 +391,26 @@ class CalendarTimetable(CronTriggerTimetable):
         Public because :mod:`.rules` consumes it: a timetable with no
         ``rules`` behaves as a single implicit "every working day" rule, and the
         rule engine delegates back here to decide what a working day is.
+
+        With ``run_on="closed"`` the answer is the exact negation of the open-day
+        test -- see :meth:`_is_open`. The rule engine reads only this method, so
+        inverting here inverts every rule with it: 毎営業日 becomes every closed
+        day, 休業日の振り替え moves a run *off* an open day, and 第n営業日 counts
+        closed days. No rule needs to know which mode is in force.
+        """
+        open_ = self._is_open(day)
+        return not open_ if self._run_on_closed else open_
+
+    def _is_open(self, day: date) -> bool:
+        """The calendar's own verdict for ``day``, before any inversion.
+
+        Order matters and is part of the contract: an explicit ``include_dates``
+        reopens a day the calendar closes, and ``exclude_dates`` closes a day it
+        opens. Under ``run_on="closed"`` these lists invert *with* everything
+        else, because the inversion is applied to the finished verdict rather
+        than to the calendar alone. That is the honest reading of "the opposite
+        of the current calendar": a day forced open is not a closed day, and a
+        day forced closed is.
         """
         if day in self.include_dates:
             return True

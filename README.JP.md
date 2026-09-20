@@ -79,6 +79,57 @@ CalendarTimetable(calendar_id="exchange:XLON")   # ロンドン証券取引所�
 カレンダーが保証できない日に実行が入ってしまうためです。本パッケージが避けようと
 している「サイレントに誤る」状態そのものです。
 
+## 休業日に実行する
+
+ここまでの Timetable は、カレンダーが「営業日」と答える日に実行するものでした。
+`run_on="closed"` を指定すると、**同じカレンダーが休業日と答える日**に実行します。
+土日・祝日・取引所の休場日が対象で、別のカレンダーを用意する必要はありません。
+
+```python
+# 土日と日本の祝日
+CalendarTimetable(calendar_id="JP", hour=9, run_on="closed")
+
+# 東京証券取引所の休場日
+CalendarTimetable(calendar_id="XTKS", hour=9, run_on="closed")
+
+# 土日のみ
+CalendarTimetable(calendar_id="NONE", hour=9, run_on="closed")
+```
+
+| `calendar_id` | `run_on="open"`（既定） | `run_on="closed"` |
+|---|---|---|
+| `JP` | 営業日 | 土日 + 日本の祝日 |
+| `XTKS` | 取引日 | 取引所の休場日 |
+| `NONE` | 月〜金 | 土日 |
+
+実装は営業日判定の単純な否定です。ただし否定をかけるのは**カレンダーの判定結果
+そのもの**で、カレンダー参照だけではありません。この一つの規則で以下がすべて
+決まります。
+
+- **`rules` も一緒に反転します。** ルールエンジンはカレンダーをこの判定経由で
+  しか見ないため、`every_business_day` は「毎休業日」を意味し、月末系のルールは
+  その月の最後の休業日に解決し、休業日の振り替えは営業日から**離れる**方向に
+  動きます。ルール側はモードの存在を知りません。
+- **`include_dates` / `exclude_dates` も反転します。** 営業日として強制した日
+  （`include_dates`）は休業日ではないため `"closed"` では**実行されません**。
+  休業日として強制した日（`exclude_dates`）は実行されます。
+  「今のカレンダーの反対」という指定を、利用者自身の上書きにも一貫して適用する
+  ためです。
+
+```python
+# 休業日に実行するが、明示的に営業日へ戻した日だけ除く
+CalendarTimetable(
+    calendar_id="JP",
+    hour=9,
+    run_on="closed",
+    exclude_dates=["2026-12-31"],   # この休業日は実行する
+    include_dates=["2026-12-30"],   # この休業日は実行しない
+)
+```
+
+48 時間制には影響しません。ルールは常に基準日に対して評価されるため、`hour=25`
+なら休業日の基準日の翌日 01:00 に実行され、日付はその休業日のままです。
+
 ## 営業日ルール
 
 `rules` にはプリセット名、`verbose_rule()` / `simple_rule()` の kwargs 辞書、

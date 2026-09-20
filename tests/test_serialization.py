@@ -83,6 +83,7 @@ class TestPayloadShape:
             "include_dates",
             "rules",
             "base_day",
+            "run_on",
         }
 
     def test_rules_are_stored_without_enum_instances(self):
