@@ -175,16 +175,29 @@ class CalendarTimetable(CronTriggerTimetable):
         include_dates: list[str] | None = None,
         rules: list[dict | ScheduleRule | str] | None = None,
         base_day: int = 1,
+        *,
+        rules_are_stored: bool = False,
     ) -> None:
+        # Validated before ``super().__init__`` so a bad value raises this
+        # class's error rather than whatever croniter makes of it. Each check
+        # tests ``isinstance(..., int)`` first: a chained comparison accepts a
+        # float, so ``hour=21.5`` used to build the expression ``0 21.5 * * *``
+        # and only fail later, at scheduling time, as a croniter error. These
+        # values arrive from ``deserialize`` as well as from callers, so a stored
+        # payload gets the same clear failure at construction.
+        if not isinstance(hour, int) or isinstance(hour, bool):
+            raise ValueError(f"hour must be an int, got {type(hour).__name__} {hour!r}")
         if not -_MAX_HOUR_OFFSET <= hour <= _MAX_HOUR_OFFSET:
             raise ValueError(
                 f"hour must be between -{_MAX_HOUR_OFFSET} and {_MAX_HOUR_OFFSET} "
                 f"(the 48-hour clock), got {hour!r}"
             )
-        # Validated before ``super().__init__`` so a bad value raises this
-        # class's error rather than whatever croniter makes of it.
+        if not isinstance(minute, int) or isinstance(minute, bool):
+            raise ValueError(f"minute must be an int, got {type(minute).__name__} {minute!r}")
         if not 0 <= minute <= 59:
             raise ValueError(f"minute must be between 0 and 59, got {minute!r}")
+        if not isinstance(base_day, int) or isinstance(base_day, bool):
+            raise ValueError(f"base_day must be an int, got {type(base_day).__name__} {base_day!r}")
         if not 1 <= base_day <= 31:
             raise ValueError(f"base_day must be between 1 and 31, got {base_day!r}")
 
@@ -213,7 +226,9 @@ class CalendarTimetable(CronTriggerTimetable):
         self.exclude_dates = frozenset(_parse_date(d) for d in (exclude_dates or ()))
         self.include_dates = frozenset(_parse_date(d) for d in (include_dates or ()))
         # Empty means "run on every working day", the pre-rules behaviour.
-        self._rules = tuple(build_rules(rules)) if rules else ()
+        # ``rules_are_stored`` is keyword-only and never set by a user: only
+        # ``deserialize`` passes it, for payloads an earlier version wrote.
+        self._rules = tuple(build_rules(rules, stored=rules_are_stored)) if rules else ()
         self._base_day = base_day
 
     # ------------------------------------------------------------------ config
@@ -281,6 +296,9 @@ class CalendarTimetable(CronTriggerTimetable):
             include_dates=data.get("include_dates"),
             rules=data.get("rules"),
             base_day=data.get("base_day", 1),
+            # Reading stored data rather than accepting configuration: a payload
+            # an earlier version wrote may carry the vocabulary this one rejects.
+            rules_are_stored=True,
         )
 
     def serialize(self) -> dict:
@@ -405,6 +423,15 @@ def _timezone_name(tz) -> str:
     return key if isinstance(key, str) else str(tz)
 
 
+#: Dataclass fields this engine records but does not honour, so new payloads
+#: leave them out. They are still *accepted* on the way in -- a payload an
+#: earlier version wrote has to keep loading, see
+#: ``ScheduleRule.from_stored_payload`` -- but writing them out propagates a
+#: vocabulary nothing consults and widens the set of deployments carrying it
+#: across the next change of contract.
+_UNSERIALIZED_RULE_FIELDS = frozenset({"virtual", "include_start"})
+
+
 def _rule_to_dict(rule: ScheduleRule) -> dict:
     """Render a rule as JSON-safe data.
 
@@ -413,11 +440,16 @@ def _rule_to_dict(rule: ScheduleRule) -> dict:
     ``Substitution`` are not ``str`` subclasses in the same way ``Kind`` is, and
     relying on that is too subtle). Emitting ``.value`` explicitly keeps the
     payload independent of the enum implementation.
+
+    Fields in :data:`_UNSERIALIZED_RULE_FIELDS` are omitted. Both default to their
+    neutral value on the way back in, so a round-trip is unaffected.
     """
     from dataclasses import fields
 
     out: dict = {}
     for field in fields(rule):
+        if field.name in _UNSERIALIZED_RULE_FIELDS:
+            continue
         value = getattr(rule, field.name)
         out[field.name] = value.value if isinstance(value, Enum) else value
     return out

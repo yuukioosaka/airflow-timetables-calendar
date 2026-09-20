@@ -73,14 +73,140 @@ class TestNthOperatingDay:
         with pytest.raises(ValueError):
             nth_business_day(0)
 
-    def test_a_large_n_crosses_into_the_next_month(self, open_calendar):
-        # 40 working days from 2026-09-01 is well into October. An earlier version
-        # capped the walk at ~5 years of steps *from the start date* and returned
-        # None here, which reads as "no run this month" rather than an error.
+    def test_a_large_n_clamps_to_the_months_last_operating_day(self, open_calendar):
+        # September 2026 has 22 運用日, so 第40営業日 cannot be named. It clamps to
+        # the month's last one rather than answering with a day of October, which
+        # is what the day-based families already do for an overshoot (絶対日
+        # day=31, 曜日指定 past the final occurrence). An earlier version walked
+        # on into the next month and so collided with that month's 第1営業日: the
+        # two rules fired together in one month and never in the other.
+        #
+        # An even earlier version capped the walk at ~5 years of *steps* and
+        # returned None here, which reads as "no run this month" rather than an
+        # error; the clamp keeps a run in the month while still refusing to name
+        # a day the month does not contain.
         got = rule(kind=Kind.OPERATING, day=40, substitution=Substitution.RUN_ANYWAY).resolve(
             period_for(date(2026, 9, 1)), open_calendar
         )
-        assert got == date(2026, 10, 26)
+        assert got == date(2026, 9, 30)
+        assert got.month == 9
+
+    def test_the_clamp_never_answers_with_a_closed_day(self, calendar):
+        # The clamp is the month's last *運用日*, not its last *day*. February
+        # 2026 ends on a Saturday, so a last-day clamp would hand back 02-28 --
+        # the one answer a 運用日 rule must never give. Under the ``JP`` calendar
+        # February holds 18 運用日, so 第20営業日 has to land on the last of them.
+        got = rule(
+            kind=Kind.OPERATING,
+            start_day=StartDay.DAY,
+            day=20,
+            substitution=Substitution.RUN_ANYWAY,
+        ).resolve(period_for(date(2026, 2, 1)), calendar)
+        assert got == date(2026, 2, 27)
+        assert calendar.is_working_day(got)
+
+    def test_an_exact_count_still_names_that_day(self, open_calendar):
+        # The clamp must not shadow a request the month *can* serve: September
+        # 2026 has exactly 22 運用日 and its last day is one of them.
+        got = rule(kind=Kind.OPERATING, day=22, substitution=Substitution.RUN_ANYWAY).resolve(
+            period_for(date(2026, 9, 1)), open_calendar
+        )
+        assert got == date(2026, 9, 30)
+
+    def test_a_month_with_no_operating_day_yields_no_run(self):
+        # Nothing to clamp to: every day is closed. Distinct from an overshoot
+        # of a month that has 運用日 at all.
+        class AllClosed(SyntheticCalendar):
+            def is_working_day(self, day: date) -> bool:
+                return False
+
+        got = rule(
+            kind=Kind.OPERATING,
+            start_day=StartDay.DAY,
+            day=3,
+            substitution=Substitution.RUN_ANYWAY,
+        ).resolve(period_for(date(2026, 9, 1)), AllClosed())
+        assert got is None
+
+
+class TestNthOperatingDayOnARealCalendar:
+    """The month bound, on a calendar dense enough with holidays to need it.
+
+    The synthetic calendar closes weekends only, so no month falls below 20
+    運用日 and ``第20営業日`` always has a real answer to find. A calendar with
+    public holidays does fall below, and that is the case the walk used to get
+    wrong -- by continuing into the following month.
+    """
+
+    @pytest.fixture
+    def jp(self):
+        from airflow_timetables_calendar.calendars import resolve_calendar
+
+        _kind, _calendar_id, is_holiday = resolve_calendar("JP")
+
+        class JpCalendar:
+            def is_working_day(self, day: date) -> bool:
+                return day.weekday() < 5 and not is_holiday("JP", day)
+
+            def holiday_name(self, day: date) -> str | None:
+                return "JP holiday" if is_holiday("JP", day) else None
+
+        return JpCalendar()
+
+    @pytest.mark.parametrize(
+        "month",
+        [
+            # Every month whose 運用日 count falls short of 20, i.e. every month
+            # the unbounded walk escaped from. 2026-02 escaped to 03-03, 05 to
+            # 06-02, 09 to 10-01 and 11 to 12-01 under the old behaviour.
+            2,
+            5,
+            9,
+            11,
+        ],
+    )
+    def test_a_short_month_answers_inside_itself(self, jp, month):
+        got = rule(
+            kind=Kind.OPERATING,
+            start_day=StartDay.DAY,
+            day=20,
+            substitution=Substitution.RUN_ANYWAY,
+        ).resolve(period_for(date(2026, month, 1)), jp)
+        assert got is not None, "a month with 運用日 must still schedule a run"
+        assert got.month == month, f"escaped 2026-{month:02d} to {got}"
+
+    def test_the_clamped_day_is_a_real_operating_day(self, jp):
+        # The bound must not substitute a 休業日 just to keep the answer in-month.
+        for month in range(1, 13):
+            got = rule(
+                kind=Kind.OPERATING,
+                start_day=StartDay.DAY,
+                day=30,
+                substitution=Substitution.RUN_ANYWAY,
+            ).resolve(period_for(date(2026, month, 1)), jp)
+            assert got is not None
+            assert got.month == month, (month, got)
+            assert jp.is_working_day(got), (month, got)
+
+    def test_no_two_monthly_rules_collide_on_one_day(self, jp):
+        # 第23営業日 of September used to land on 2026-10-01, which is 第1営業日
+        # of October: the two rules fired together in one month and never in the
+        # other. Nothing a month cannot contain may be answered with a day that
+        # another month's rule owns.
+        owner: dict[date, tuple[int, int]] = {}
+        for month in range(1, 13):
+            anchor = period_for(date(2026, month, 1))
+            for n in (1, 23):
+                got = rule(
+                    kind=Kind.OPERATING,
+                    start_day=StartDay.DAY,
+                    day=n,
+                    substitution=Substitution.RUN_ANYWAY,
+                ).resolve(anchor, jp)
+                if got is None:
+                    continue
+                assert got not in owner, (got, owner[got], (month, n))
+                owner[got] = (month, n)
 
 
 class TestNthOperatingDayFromMonthEnd:
@@ -529,7 +655,11 @@ class TestBaseDayIntegration:
     def test_every_operating_count_stays_inside_the_period(self, period, open_calendar):
         # The regression in one assertion: no 運用日 count may answer with a date
         # outside the period, which is what the calendar-month origin produced.
-        for n in range(1, 16):
+        # The sweep used to stop at 15, one short of the first count that runs
+        # out of 運用日: the walk then carried on into the next month, so the
+        # guard never saw the bug it was written for. Cover past any month's
+        # length so an escape cannot hide behind a small sample.
+        for n in range(1, 40):
             got = rule(**nth_business_day(n)).resolve(period, open_calendar)
             assert period.contains(got), (n, got)
 

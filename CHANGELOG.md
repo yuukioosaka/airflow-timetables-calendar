@@ -5,6 +5,51 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-20
+
+### Fixed
+
+- **第n営業日 / 第n休業日 no longer escape their month.** The forward walk from
+  the anchor was unbounded, so a month holding fewer than `n` 運用日 answered with
+  a date in the *next* month: under the `JP` calendar 第20営業日 of 2026-02
+  returned 2026-03-03, 2026-05 returned 2026-06-02, 2026-09 returned 2026-10-01
+  and 2026-11 returned 2026-12-01. Besides firing on a day the rule did not name,
+  this collided with the following month's 第1営業日 -- so a DAG listing both
+  rules fired twice on one day and never in the other month. The walk is now
+  clamped to the anchor month's last *運用日* (not its last *day*: a month closing
+  on a Saturday must not answer with that Saturday, which a 運用日 rule can never
+  return). This matches how 絶対日 `day=31` and 曜日指定 past the final occurrence
+  already clamp, and a month that has no 運用日 at all still yields no run.
+- **A stored DAG payload carrying `virtual` / `include_start` loads again.** These
+  fields are rejected when a rule is *written* -- the call site is where the
+  mistake is visible -- but `_rule_to_dict` emitted every dataclass field, so a
+  payload serialized before 0.4.0 could carry them, and 0.4.0's rejection then
+  surfaced as `NotImplementedError` during DAG parse. A payload already in
+  Airflow's database is a record rather than a request, so `deserialize` now
+  reads it back, ignores the dead flags and warns once per flag.
+- **Non-integer `hour` / `minute` / `base_day` are rejected at construction.**
+  The range checks used chained comparisons, which accept a float, so a stored
+  payload with `hour=21.5` built the cron expression `0 21.5 * * *` and failed
+  much later inside the scheduler as a croniter error. A `str` or `None` raised a
+  bare `TypeError` from the comparison instead of a clear message.
+
+### Changed
+
+- New payloads no longer serialize `virtual` / `include_start`. Nothing consults
+  them, so writing them out only propagated a vocabulary this engine ignores.
+  Both default back on read, so round-tripping is unaffected.
+- A stored rule payload naming a field this version does not know is now loaded
+  with that field ignored and a warning, rather than raising `TypeError`. A
+  payload written by a *later* version can therefore be read back, which matters
+  for a downgrade or a mixed-version cluster.
+
+### Documentation
+
+- The `grace_days` note in both READMEs no longer says to omit it "unless you
+  need a tighter window": no value requests less than the default (0 selects the
+  default, every other value is a positive day count), so the parameter can only
+  widen it.
+
 ## [0.4.0] - 2026-09-20
 
 ### Changed

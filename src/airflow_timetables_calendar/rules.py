@@ -77,12 +77,18 @@ This module imports nothing from Airflow.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+import logging
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from dataclasses import fields as dataclass_fields
 from datetime import date, timedelta
 from enum import Enum
+from functools import cache
+from typing import Any
 
 from .calendars import WorkingDayCalendar
+
+log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Enumerations
@@ -144,7 +150,7 @@ class Frequency(str, Enum):
 _SUPPORTED_FREQUENCIES = frozenset({Frequency.DAILY, Frequency.MONTHLY})
 
 
-def _reject_unimplemented_fields(rule: ScheduleRule) -> None:
+def _reject_unimplemented_fields(rule: ScheduleRule, *, stored: bool = False) -> None:
     """Fail loudly on vocabulary this engine records but cannot honour.
 
     Both fields below are part of the classical vocabulary and are carried so a
@@ -168,7 +174,18 @@ def _reject_unimplemented_fields(rule: ScheduleRule) -> None:
       from the day under test, so a rule never learns "which month it started
       from", and there is nothing for the flag to test. Bounding the window is
       the job of the caller, which knows its own start date.
+
+    ``stored`` marks the one caller that is *reading a payload back* rather than
+    accepting configuration -- see :meth:`ScheduleRule.from_stored_payload`. A
+    hand-written rule that sets either field gets the exception below, pointing
+    at the line that is wrong. A rule rebuilt from data an earlier version wrote
+    does not: the payload is already in Airflow's database and the caller cannot
+    act on the error, so raising would turn a survivable upgrade into a DAG that
+    will not parse. The fields are still rejected for anything written now.
     """
+    if stored:
+        _warn_dead_flags(rule)
+        return
     if rule.virtual:
         raise NotImplementedError(
             "virtual=True (除外) is not implemented: nothing consults the flag, so a "
@@ -183,6 +200,64 @@ def _reject_unimplemented_fields(rule: ScheduleRule) -> None:
             "it started from. Bound the window on the timetable instead -- pass the "
             "month you want the schedule to begin with as the timetable's start_date."
         )
+
+
+#: The value each carried-but-dead field takes when it asks for nothing.
+_NEUTRAL_FLAG_VALUE = {"virtual": False, "include_start": True}
+
+#: Why each one cannot be honoured, phrased for a log line rather than a traceback.
+_DEAD_FLAG_REASON = {
+    "virtual": (
+        "virtual=True (除外) suppresses nothing here, so the rule runs like any other. "
+        "Express the exclusion with the timetable's exclude_dates instead."
+    ),
+    "include_start": (
+        "include_start=False is ignored: this engine carries no 開始年月 value to test "
+        "the boundary against. Bound the window with the timetable's start_date instead."
+    ),
+}
+
+
+def _warn_dead_flags(rule: ScheduleRule) -> None:
+    """Warn (once per field/value pair) about stored flags this engine ignores.
+
+    Deduplicated because the read path is hot: ``matches()`` runs for every
+    timestamp the scheduler considers, so an undamped warning would repeat
+    indefinitely for a payload that has already been reported and understood. The
+    cache is keyed on the value too, so a *different* stored payload is still
+    reported rather than being silenced by the first.
+    """
+    for name, neutral in _NEUTRAL_FLAG_VALUE.items():
+        value = getattr(rule, name)
+        if value == neutral:
+            continue
+        _log_dead_flag(name, repr(value), _DEAD_FLAG_REASON[name])
+
+
+@cache
+def _log_unknown_stored_fields(names: tuple[str, ...]) -> None:
+    """Warn (once per field tuple) that a stored payload carries unknown fields.
+
+    Forward compatibility: a payload written by a later version may name fields
+    this one does not have. Raising would make a downgrade or a mixed-version
+    cluster unable to read its own stored data, so the fields are ignored -- but
+    reported, because a dropped field can mean a different schedule.
+    """
+    log.warning(
+        "Stored schedule rule carries field(s) this version does not know: %s. "
+        "They are ignored, so the schedule may differ from the one recorded.",
+        ", ".join(names),
+    )
+
+
+@cache
+def _log_dead_flag(name: str, value: str, reason: str) -> None:
+    log.warning(
+        "Stored schedule rule carries %s=%s, which this version does not implement. %s",
+        name,
+        value,
+        reason,
+    )
 
 
 def _reject_unsupported_frequency(frequency: Frequency) -> Frequency:
@@ -464,11 +539,64 @@ class ScheduleRule:
         if self.weekday is not None and not isinstance(self.weekday, Weekday):
             object.__setattr__(self, "weekday", Weekday(self.weekday))
         # 除外 and the 開始年月 boundary are requests this engine would answer by
-        # doing the opposite, so they must not reach resolution.
-        _reject_unimplemented_fields(self)
+        # doing the opposite, so they must not reach resolution. ``_from_stored``
+        # is set only by :meth:`from_stored_payload`, which is the one path that
+        # is reading data back rather than accepting configuration.
+        _reject_unimplemented_fields(self, stored=getattr(self, "_from_stored", False))
         # After the coercion, so a raw "weekly" string is caught too. A 処理サイクル
         # nothing consults would repeat monthly, so it must not reach resolution.
         _reject_unsupported_frequency(self.frequency)
+
+    @classmethod
+    def from_stored_payload(cls, payload: Mapping[str, Any]) -> ScheduleRule:
+        """Rebuild a rule that was serialized by an earlier version.
+
+        The public constructor rejects the carried-but-unimplemented vocabulary,
+        because a hand-written rule that sets it is making a request this engine
+        would answer by doing the opposite -- and the call site is where that is
+        visible. The same payload read back from Airflow's database is not a
+        request but a record: it was written by a version that accepted those
+        fields, and refusing to load it would leave the deployment with a DAG
+        that stops parsing and no way to repair the stored data.
+
+        So this path loads the rule, ignores the dead flags, and warns once about
+        each.
+
+        The marker goes on the *class* for the duration of the call.
+        ``__post_init__`` runs inside ``cls(**payload)`` and is what consults it,
+        so it has to be in place before construction -- setting an instance
+        attribute afterwards would be too late to suppress the exception. It is
+        cleared in a ``finally`` so a failed construction cannot leave the
+        permissive path armed for later callers.
+
+        The payload is taken as a mapping of ``Any`` because that is what a
+        stored rule holds: raw strings for the enum fields, which
+        ``__post_init__`` coerces. Declaring the field types here would claim the
+        payload was already a valid rule, which is precisely what is being read
+        back.
+        """
+        # A transient marker on the class, not a dataclass field: it exists only
+        # for the duration of this call, which is why it is set here rather than
+        # declared. ``__post_init__`` reads it through the same door.
+        known = {f.name for f in dataclass_fields(cls)}
+        accepted = {name: value for name, value in payload.items() if name in known}
+        unknown = set(payload) - known
+        if unknown:
+            # A payload from a *newer* version carries fields this one has never
+            # heard of. Reading stored data must not fail on that: the same
+            # reasoning as the dead flags above. Warn, because silently dropping
+            # a field could change the schedule the payload described.
+            _log_unknown_stored_fields(tuple(sorted(unknown)))
+
+        setattr(cls, "_from_stored", True)  # noqa: B010
+        try:
+            rule = cls(**accepted)  # type: ignore[arg-type]
+        finally:
+            delattr(cls, "_from_stored")
+        # The constructor already warned that something was dropped; this says
+        # *what*, once per field and value.
+        _warn_dead_flags(rule)
+        return rule
 
     # ---------------------------------------------------------------- resolve
 
@@ -690,10 +818,31 @@ class ScheduleRule:
         which is what lets 第n営業日 follow 基準日 while 絶対日 keeps the calendar
         month. Counting from the first of the month regardless put ``base_day=26``
         answers *before* the period they belonged to.
+
+        日付指定 counts *within* the anchor month, so the walk is clamped to the
+        anchor month's last 運用日. Without the bound the walk simply kept going:
+        第20営業日 of a month holding only 18 運用日 answered with a date in the
+        *next* month (2026-02 gave 2026-03-03, 2026-05 gave 2026-06-02 under the
+        ``JP`` calendar), so the schedule fired on a day the rule did not name --
+        and collided with the following month's 第1営業日, which made the two
+        rules fire together in one month and never in the other.
+
+        The clamp is the month's last *運用日*, not its last *day*. The day-based
+        families (絶対日 ``day=31``, 曜日指定 past the final occurrence) clamp to
+        the last day because a day is what they name; 日付指定 names a 運用日, so
+        the last day is only the right answer when it happens to be one. A month
+        closing on a Saturday must not answer with that Saturday -- that would
+        hand back the one thing a 運用日 rule can never return. It is also what
+        the period-bounded reading already gives: when the period ends on the
+        month's last day (``第1営業日`` with ``base_day=1``), the period's closing
+        運用日 *is* the month's closing 運用日.
+
+        A month with no 運用日 at all has no such day and yields no run, the same
+        outcome 月末指定 has when its count runs past the month start.
         """
         if n < 1:
             return None
-        return self._scan(anchor, 1, n - 1, cal.is_working_day)
+        return self._scan(anchor, 1, n - 1, cal.is_working_day, month_bounded=True)
 
     def _nth_closed_day_in_period(
         self, anchor: date, n: int, cal: WorkingDayCalendar
@@ -702,10 +851,15 @@ class ScheduleRule:
 
         Same origin rule as :meth:`_nth_working_day_in_period`: the period start
         for the 基準日-relative kinds, the calendar month's first day for 絶対日.
+        The month bound is shared too, and for the same reason -- a 休業日 count
+        that runs out of the month would otherwise name a day of the next one.
+        The clamp is the month's last *matching* day, so unlike the 運用日 case it
+        is found by walking back from the month end rather than by starting at it:
+        the month's actual last day is 休業日 only when it is a weekend or holiday.
         """
         if n < 1:
             return None
-        return self._scan(anchor, 1, n - 1, lambda d: not cal.is_working_day(d))
+        return self._scan(anchor, 1, n - 1, lambda d: not cal.is_working_day(d), month_bounded=True)
 
     def _nth_working_day_back_from(
         self, last: date, n: int, cal: WorkingDayCalendar
@@ -730,6 +884,7 @@ class ScheduleRule:
         n: int,
         predicate: Callable[[date], bool],
         floor: date | None = None,
+        month_bounded: bool = False,
     ) -> date | None:
         """Walk from ``start`` until ``n`` matching days have been *skipped*.
 
@@ -751,14 +906,37 @@ class ScheduleRule:
         rather than a day of a neighbouring month. Leaving it unbounded here
         put the anchor outside the month it was derived from, which also made
         the epoch a run came from impossible to bound.
+
+        ``month_bounded`` is the mirror image, for the counts that start at the
+        beginning of the month and run *forward*: the walk stops at the anchor
+        month's last matching day. The answer is exact when the requested day
+        exists, and the closing day of the month when it does not -- a *clamp*,
+        matching how 絶対日 ``day=31`` and 曜日指定 past the final occurrence
+        behave, rather than 月末指定's no-run. Both readings cannot be right for
+        the same overshoot, and clamping is the one the day-based families
+        already committed to; the alternative silently dropped a run for every
+        month that happened to be a day or two short.
+
+        The clamping day is a matching day by construction, so a 運用日 count can
+        never answer with a 休業日 even when the month ends on a weekend. Only a
+        month with no matching day at all yields no run. ``step`` is always +1
+        here; the backward family uses ``floor`` instead.
         """
         day = start
         remaining = n
+        limit: date | None = None
+        if month_bounded:
+            assert step > 0, "month_bounded describes a forward walk"
+            limit = _month_end(start.year, start.month)
         while True:
             if floor is not None and ((step < 0 and day < floor) or (step > 0 and day > floor)):
                 # Ran out of the window the caller allows: no run, rather
                 # than walking into the neighbouring period.
                 return None
+            if limit is not None and day > limit:
+                # The month has no matching day as late as ``day`` asked for.
+                # Clamp to the month's last one, searching back from its end.
+                return ScheduleRule._scan(limit, -1, 0, predicate)
             if predicate(day):
                 if remaining == 0:
                     return day
@@ -1226,20 +1404,37 @@ def calendar_days_after(anchor: ScheduleRule, n: int) -> ScheduleRule:
     return replace(anchor, offset=n, count=Count.CALENDAR)
 
 
-def build_rules(items: Iterable[dict | ScheduleRule | str]) -> list[ScheduleRule]:
-    """Normalise a mixed list of rule dicts, rules and preset names."""
+def build_rules(
+    items: Iterable[dict | ScheduleRule | str], *, stored: bool = False
+) -> list[ScheduleRule]:
+    """Normalise a mixed list of rule dicts, rules and preset names.
+
+    ``stored=True`` marks the items as having been read back from a serialized
+    payload rather than handed over as configuration -- the path that has to
+    tolerate vocabulary an earlier version recorded. See
+    :meth:`ScheduleRule.from_stored_payload`.
+    """
     rules: list[ScheduleRule] = []
     for item in items:
         if isinstance(item, ScheduleRule):
             rules.append(item)
         elif isinstance(item, str):
+            # A preset name is a name, not stored data: it always resolves to the
+            # current definition, so the stored path has nothing extra to allow.
             canonical = PRESET_LOOKUP.get(item)
             if canonical is None:
                 known = ", ".join(sorted(PRESET_LOOKUP))
                 raise KeyError(f"unknown preset {item!r}; known presets: {known}")
             rules.append(ScheduleRule(**BUSINESS_DAY_RULES[canonical]))
         elif isinstance(item, dict):
-            rules.append(ScheduleRule(**item))
+            if stored:
+                # A stored payload holds raw JSON values -- strings for the enum
+                # fields -- which ``ScheduleRule.__post_init__`` coerces. The
+                # dict is typed for the writing path, so the mismatch is stated
+                # here rather than claimed away.
+                rules.append(ScheduleRule.from_stored_payload(item))
+            else:
+                rules.append(ScheduleRule(**item))
         else:
             raise TypeError(f"cannot build a schedule rule from {type(item).__name__}")
     return rules
